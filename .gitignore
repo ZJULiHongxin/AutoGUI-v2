@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+utils/data_utils/autoguiv2/corrected_datasets
+utils/data_utils/autoguiv2/corrected_datasets_vis
+utils/eval_utils/autoguiv2/eval_results
+utils/eval_utils/autoguiv2/elemgnd_hf_dataset_cache
+utils/eval_utils/autoguiv2/screenshotv2_hf_dataset_cache
