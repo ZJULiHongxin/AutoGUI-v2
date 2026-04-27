@@ -1,0 +1,1303 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AutoGUIv2 Annotation Monitor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      :root { --bg: #0b0f19; --panel: #121826; --text: #e2e8f0; --muted: #94a3b8; --accent: #60a5fa; --border: #1f2937; --highlight: #f59e0b; 
+              --light-yellow-bg: rgba(254, 243, 199, 0.15); --light-yellow-border: rgba(251, 191, 36, 0.4);
+              --medium-yellow-bg: rgba(252, 211, 77, 0.25); --medium-yellow-border: rgba(245, 158, 11, 0.6);
+              --dark-yellow-bg: rgba(217, 119, 6, 0.3); --dark-yellow-border: rgba(217, 119, 6, 0.8);
+              --red-bg: rgba(220, 38, 38, 0.25); --red-border: rgba(220, 38, 38, 0.9); }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial, "Apple Color Emoji", "Segoe UI Emoji"; background: var(--bg); color: var(--text); }
+      header { display: flex; align-items: center; gap: 16px; padding: 16px 20px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: rgba(11,15,25,0.9); backdrop-filter: blur(8px); z-index: 10; }
+      h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+      .row { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 64px); }
+      aside { border-right: 1px solid var(--border); background: var(--panel); overflow: auto; }
+      main { position: relative; overflow: hidden; }
+      .section { padding: 12px 12px 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .12em; display: flex; align-items: center; gap: 8px; }
+      .section .counter { background: var(--accent); color: var(--bg); padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+      .list { padding: 0 8px 16px; }
+      .item { padding: 10px 10px; margin: 6px 4px; background: #0f1625; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; transition: background .2s, border .2s; }
+      .item:hover { background: #121a2c; border-color: #2b3648; }
+      .item.light-yellow { background: var(--light-yellow-bg); border-color: var(--light-yellow-border); }
+      .item.medium-yellow { background: var(--medium-yellow-bg); border-color: var(--medium-yellow-border); }
+      .item.dark-yellow { background: var(--dark-yellow-bg); border-color: var(--dark-yellow-border); }
+      .item.red { background: var(--red-bg); border-color: var(--red-border); }
+      .item .title { font-size: 13px; font-weight: 600; }
+      .item .meta { margin-top: 4px; font-size: 12px; color: var(--muted); }
+      .toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); background: #0f1625; }
+      select, button { background: #0b1220; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; cursor: pointer; }
+      button.primary { background: #0d1b2f; border-color: #284163; color: #bcd7ff; }
+      .split { display: grid; grid-template-columns: 0.8fr 0.8fr 1.4fr; height: calc(100% - 48px); }
+      .panel { border-right: 1px solid var(--border); overflow: auto; position: relative; }
+      .panel:last-child { border-right: none; }
+      .panel h2 { font-size: 13px; letter-spacing: .1em; color: var(--muted); margin: 10px 12px; text-transform: uppercase; }
+      .node-preview { padding: 10px; }
+      .node-preview img { max-width: 100%; border-radius: 10px; border: 1px solid var(--border); background: #0a0f1a; }
+      .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px; }
+      .kv { background: #0f1625; border: 1px solid var(--border); border-radius: 10px; padding: 10px; font-size: 12px; }
+      .kv .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+      .kv .v { margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 6px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+        margin-left: 6px;
+        background: rgba(96, 165, 250, 0.15);
+        color: var(--accent);
+        cursor: help;
+      }
+      .badge.revised {
+        border-color: var(--light-yellow-border);
+        background: var(--light-yellow-bg);
+        color: var(--highlight);
+      }
+      .tree { width: 100%; height: 100%; }
+      .footer { padding: 6px 12px; color: var(--muted); border-top: 1px solid var(--border); font-size: 12px; }
+      a { color: var(--accent); text-decoration: none; }
+
+.modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0,0,0,0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal-content {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 20px;
+  max-width: 90%;
+  max-height: 90vh;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  cursor: pointer;
+  font-size: 24px;
+  color: var(--text);
+}
+.modal-grid {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 20px;
+  margin-top: 15px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.modal-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.modal-meta-info {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.modal-meta-info .label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+.modal-meta-info .label:first-child {
+  margin-top: 0;
+}
+.modal-meta-info .value {
+  color: var(--text);
+  line-height: 1.4;
+}
+#correction-image-container {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 0;
+  overflow: hidden;
+}
+#correction-image {
+  max-width: 100%;
+  max-height: 100%;
+}
+#correction-overlay {
+    position:absolute;
+    cursor: crosshair;
+}
+#zoom-preview-container h4 {
+  margin: 10px 0 5px;
+  font-size: 13px;
+  letter-spacing: .1em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+#zoom-preview {
+  width: 200px;
+  height: 200px;
+  border: 1px solid var(--border);
+  background-color: var(--bg);
+  background-repeat: no-repeat;
+  position: relative;
+  overflow: hidden; /* Hide anything outside the preview box */
+}
+#zoom-canvas {
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
+#zoom-preview::before, #zoom-preview::after {
+    content: '';
+    position: absolute;
+    background: rgba(255, 0, 0, 0.7);
+    z-index: 1;
+}
+#zoom-preview::before { /* vertical line */
+    left: 50%;
+    top: 0;
+    width: 1px;
+    height: 100%;
+    transform: translateX(-50%);
+}
+#zoom-preview::after { /* horizontal line */
+    top: 50%;
+    left: 0;
+    height: 1px;
+    width: 100%;
+    transform: translateY(-50%);
+}
+.coord-input {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 10px 0;
+}
+.coord-input label {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--muted);
+}
+.coord-input input {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  width: 100%;
+}
+.action-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.action-buttons button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.action-buttons button.primary {
+  background: var(--accent);
+  color: white;
+}
+.action-buttons button.secondary {
+  background: var(--border);
+  color: var(--text);
+}
+#full-image-container {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px;
+    position: relative;
+}
+#full-image {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+#bbox-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+#loading-indicator {
+  display: none;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0,0,0,0.7);
+  padding: 10px 20px;
+  border-radius: 8px;
+  color: white;
+  font-size: 14px;
+  z-index: 10;
+}
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script async src="https://docs.opencv.org/4.x/opencv.js" onload="cvReady = true;"></script>
+  </head>
+  <body>
+    <header>
+      <h1>AutoGUIv2 Annotation Monitor</h1>
+    </header>
+    <div class="row">
+      <aside>
+        <div class="section">Datasets / Namespaces</div>
+        <div class="list" id="ns-list"></div>
+        <div class="section">
+          <span>Images</span>
+          <span class="counter" id="processed-counter">0/0</span>
+        </div>
+        <div class="list" id="img-list"></div>
+      </aside>
+      <main>
+        <div class="toolbar">
+          <label>Namespace</label>
+          <select id="namespace"></select>
+          <label>Model</label>
+          <select id="model"></select>
+          <label>Version</label>
+          <select id="version"></select>
+          <label>Image</label>
+          <select id="image"></select>
+          <button class="primary" id="refresh">Refresh</button>
+          <div style="margin-left:auto;color:#7a89a6;font-size:12px" id="status"></div>
+        </div>
+        <div class="split">
+          <div class="panel">
+            <h2>Annotation Tree</h2>
+            <svg class="tree" id="tree"></svg>
+          </div>
+          <div class="panel">
+            <h2>Node Details</h2>
+            <div class="node-preview" id="preview"></div>
+            <div class="meta-grid" id="meta"></div>
+            <button id="fix-bbox" class="primary" style="margin: 10px;" onclick="if(currentNodeId) openCorrectionModal(currentNodeId); else alert('Select a node first');">Fix bbox</button>
+            <div class="footer" id="updated"></div>
+          </div>
+          <div class="panel">
+            <h2>Full Image with BBoxes</h2>
+            <div id="full-image-container">
+              <img id="full-image" src="">
+              <svg id="bbox-overlay"></svg>
+            </div>
+            <div id="comparison-info" style="padding: 0 10px 10px; font-size: 12px; color: var(--muted);"></div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div id="correction-modal" class="modal" style="display:none">
+      <div class="modal-content">
+        <span class="close" onclick="closeModal()">&times;</span>
+        <h3>Correct Bounding Box for Node <span id="modal-node-id"></span></h3>
+        <p>Click a "Select" button, then click on the image to define a corner. Long-press for auto-snap to borders. Hold Ctrl + long-press for auto-snap to corners.</p>
+        
+        <div class="modal-grid">
+            <div class="modal-controls">
+                <div id="modal-meta-info" class="modal-meta-info"></div>
+                <button id="btn-select-tl" onclick="startSelect('tl')">Select Top-Left</button>
+                <button id="btn-select-br" onclick="startSelect('br')">Select Bottom-Right</button>
+                <div class="coord-input">
+                    <label>TL X: <input id="input-tl-x" type="number" oninput="updateFromInputs()"></label>
+                    <label>TL Y: <input id="input-tl-y" type="number" oninput="updateFromInputs()"></label>
+                    <label>BR X: <input id="input-br-x" type="number" oninput="updateFromInputs()"></label>
+                    <label>BR Y: <input id="input-br-y" type="number" oninput="updateFromInputs()"></label>
+                </div>
+                <div id="cursor-coords-display" style="font-size: 12px; color: var(--muted); height: 1.5em;"></div>
+
+                <div id="zoom-preview-container">
+                    <h4>Zoom Preview</h4>
+                    <div id="zoom-preview">
+                        <canvas id="zoom-canvas"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div id="correction-image-container">
+                <img id="correction-image" src="">
+                <svg id="correction-overlay"></svg>
+                <div id="loading-indicator">Detecting...</div>
+            </div>
+        </div>
+
+        <div class="action-buttons">
+            <button class="secondary" onclick="closeModal()">Cancel</button>
+            <button class="primary" onclick="confirmCorrection()">Confirm</button>
+        </div>
+      </div>
+    </div>
+    <canvas id="temp-canvas" style="display: none;"></canvas>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const nsSel = $('namespace');
+      const modelSel = $('model');
+      const verSel = $('version');
+      const imgSel = $('image');
+      const treeEl = $('tree');
+      const statusEl = $('status');
+      const previewEl = $('preview');
+      const metaEl = $('meta');
+      const updatedEl = $('updated');
+      let currentNodeId = '0-0';
+      let fullImageInfo = {};
+      let cvReady = false; // Flag for OpenCV loaded
+      let imageMetadata = {}; // Store image metadata for updates
+
+      const createRevisedBadge = (originalText) => {
+        const badge = document.createElement('span');
+        badge.className = 'badge revised';
+        badge.textContent = 'Revised';
+        const tooltip = (originalText ?? '').toString().trim();
+        badge.title = tooltip ? `Original:\n${tooltip}` : 'Original annotation unavailable';
+        return badge;
+      };
+
+      async function getJSON(url) {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+      }
+
+      function nodeToHierarchy(tree) {
+        const nodes = tree || {};
+        const makeNode = (id) => {
+          const v = nodes[id] || {};
+          const kids = (v.children || []).map(makeNode);
+          return { id, data: v, children: kids };
+        };
+        return makeNode('0-0');
+      }
+
+      function renderTree(rootData) {
+        const w = treeEl.clientWidth || 800;
+        const h = treeEl.clientHeight || 600;
+        const margin = {top: 20, right: 40, bottom: 20, left: 60};
+        const innerW = w - margin.left - margin.right;
+        const innerH = h - margin.top - margin.bottom;
+        treeEl.setAttribute('width', w);
+        treeEl.setAttribute('height', h);
+        const svg = d3.select(treeEl);
+        svg.selectAll('*').remove();
+        const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+        const root = d3.hierarchy(rootData);
+        const treeLayout = d3.tree().size([innerH, innerW]);
+        treeLayout(root);
+
+        g.selectAll('path.link')
+          .data(root.links())
+          .join('path')
+          .attr('class', 'link')
+          .attr('fill', 'none')
+          .attr('stroke', '#2b3648')
+          .attr('stroke-width', 1.2)
+          .attr('d', d3.linkHorizontal().x(d => d.y).y(d => d.x));
+
+        const node = g.selectAll('g.node')
+          .data(root.descendants())
+          .join('g')
+          .attr('class', 'node')
+          .attr('transform', d => `translate(${d.y},${d.x})`)
+          .style('cursor', 'pointer')
+          .on('click', (_, d) => loadNode(d.data.id));
+
+        node.append('circle')
+          .attr('r', 6)
+          .attr('fill', d => d.data.data?.children?.length ? 'var(--accent)' : 'var(--muted)')
+          .attr('stroke', 'var(--bg)')
+          .attr('stroke-width', 1.5);
+
+        node.append('text')
+          .attr('dy', '0.32em')
+          .attr('x', 10)
+          .attr('fill', '#cbd5e1')
+          .style('font-size', '12px')
+          .text(d => d.data.id);
+      }
+
+      function renderNode(meta) {
+        previewEl.innerHTML = '';
+        metaEl.innerHTML = '';
+        if (meta.image_url) {
+          const img = document.createElement('img');
+          img.src = meta.image_url + '?' + new Date().getTime();
+          previewEl.appendChild(img);
+        }
+        const fields = [
+          {
+            label: 'Function EN',
+            value: meta.functionality?.with_context ?? '',
+            revised: Boolean(meta.functionality_revised),
+            original: meta.original_functionality
+          },
+          {
+            label: 'Desc EN',
+            value: meta.description?.with_context ?? '',
+            revised: Boolean(meta.description_revised),
+            original: meta.original_description
+          },
+          { label: 'Region Type', value: meta.region_type },
+          { label: 'BBox global', value: meta.bbox_global ? JSON.stringify(meta.bbox_global) : null },
+          { label: 'Corrected BBox', value: meta.corrected_bbox ? JSON.stringify(meta.corrected_bbox) : null },
+          { label: 'Children', value: (meta.children || []).length ? (meta.children || []).join(', ') : null },
+        ];
+
+        for (const field of fields) {
+          const card = document.createElement('div');
+          card.className = 'kv';
+
+          const kk = document.createElement('div');
+          kk.className = 'k';
+          kk.textContent = field.label;
+          if (field.revised) {
+            kk.appendChild(document.createTextNode(' '));
+            kk.appendChild(createRevisedBadge(field.original));
+          }
+
+          const vv = document.createElement('div');
+          vv.className = 'v';
+          const displayValue = field.value;
+          if (displayValue === undefined || displayValue === null || displayValue === '') {
+            vv.textContent = '—';
+          } else {
+            vv.textContent = displayValue;
+          }
+
+          card.appendChild(kk);
+          card.appendChild(vv);
+          metaEl.appendChild(card);
+        }
+      }
+
+      async function loadNamespaces() {
+        const data = await getJSON('/api/namespaces');
+        const list = $('ns-list'); list.innerHTML = '';
+        nsSel.innerHTML = '';
+        for (const ns of data.namespaces) {
+          const opt = document.createElement('option'); opt.value = ns; opt.textContent = ns; nsSel.appendChild(opt);
+          const item = document.createElement('div'); item.className = 'item'; item.textContent = ns; item.onclick = () => { nsSel.value = ns; loadModels(); }; list.appendChild(item);
+        }
+      }
+
+      async function loadModels() {
+        const ns = nsSel.value; if (!ns) return;
+        const data = await getJSON(`/api/models?namespace=${encodeURIComponent(ns)}`);
+        modelSel.innerHTML = '';
+        for (const model of data.models) {
+          const opt = document.createElement('option'); opt.value = model; opt.textContent = model; modelSel.appendChild(opt);
+        }
+        if (data.models.length) {
+          modelSel.value = data.models[0];
+          loadVersions();
+        }
+      }
+
+      async function loadVersions() {
+        const ns = nsSel.value; const model = modelSel.value; if (!ns || !model) return;
+        const data = await getJSON(`/api/versions?namespace=${encodeURIComponent(ns)}&model_name=${encodeURIComponent(model)}`);
+        verSel.innerHTML = '';
+        for (const ver of data.versions) {
+          const opt = document.createElement('option'); opt.value = ver; opt.textContent = ver; verSel.appendChild(opt);
+        }
+        if (data.versions?.length) verSel.value = data.versions[data.versions.length - 1];
+        loadImages();
+      }
+
+      async function loadImages() {
+        const ns = nsSel.value; const model = modelSel.value; const ver = verSel.value; if (!ns || !model) return;
+        const url = ver ? `/api/images?namespace=${encodeURIComponent(ns)}&model_name=${encodeURIComponent(model)}&version=${encodeURIComponent(ver)}` : `/api/images?namespace=${encodeURIComponent(ns)}&model_name=${encodeURIComponent(model)}`;
+        const data = await getJSON(url);
+        const list = $('img-list'); list.innerHTML = '';
+        imgSel.innerHTML = '';
+        imageMetadata = {}; // Reset metadata
+        
+        let processedCount = 0;
+        
+        for (const im of data.images) {
+          const id = im.image_id;
+          
+          // Store metadata for later updates
+          imageMetadata[id] = {
+            nodes_count: im.nodes_count,
+            stack_len: im.stack_len,
+            corrections_count: im.corrections_count || 0,
+            updated_at: im.updated_at
+          };
+          
+          const title = document.createElement('div'); title.className = 'title'; title.textContent = id;
+          const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = `${im.nodes_count} nodes · stack ${im.stack_len} · ${im.corrections_count || 0} corrections${im.updated_at ? ' · ' + new Date(im.updated_at).toLocaleString() : ''}`;
+          const item = document.createElement('div'); item.className = 'item';
+          item.setAttribute('data-image-id', id);
+          
+          // Count processed images (with corrections > 0)
+          if (im.corrections_count > 0) {
+            processedCount++;
+          }
+          
+          // Apply color coding based on correction ratio
+          const correctionRatio = im.nodes_count > 0 ? im.corrections_count / im.nodes_count : 0;
+          if (correctionRatio >= 0.5) {
+            item.classList.add('red');
+          } else if (correctionRatio >= 0.2) {
+            item.classList.add('dark-yellow');
+          } else if (correctionRatio >= 0.1) {
+            item.classList.add('medium-yellow');
+          } else if (correctionRatio > 0) {
+            item.classList.add('light-yellow');
+          }
+          
+          item.appendChild(title); item.appendChild(meta);
+          item.onclick = () => { imgSel.value = id; loadTree(); };
+          list.appendChild(item);
+          const opt = document.createElement('option'); opt.value = id; opt.textContent = id; imgSel.appendChild(opt);
+        }
+        
+        // Update the processed counter
+        $('processed-counter').textContent = `${processedCount}/${data.images.length}`;
+        
+        if (data.images.length) imgSel.value = data.images[0].image_id;
+        loadTree();
+      }
+
+      function updateImageCard(imageId) {
+        // Find the image item in the sidebar
+        const item = document.querySelector(`.item[data-image-id="${imageId}"]`);
+        if (!item || !imageMetadata[imageId]) return;
+
+        const metadata = imageMetadata[imageId];
+        
+        // Increment corrections count
+        const oldCorrectionsCount = metadata.corrections_count;
+        metadata.corrections_count++;
+        
+        // Update the meta text
+        const metaDiv = item.querySelector('.meta');
+        if (metaDiv) {
+          metaDiv.textContent = `${metadata.nodes_count} nodes · stack ${metadata.stack_len} · ${metadata.corrections_count} corrections${metadata.updated_at ? ' · ' + new Date(metadata.updated_at).toLocaleString() : ''}`;
+        }
+        
+        // Update color coding if needed
+        const newCorrectionRatio = metadata.nodes_count > 0 ? metadata.corrections_count / metadata.nodes_count : 0;
+        // Remove all color classes first
+        item.classList.remove('light-yellow', 'medium-yellow', 'dark-yellow', 'red');
+        
+        if (newCorrectionRatio >= 0.5) {
+          item.classList.add('red');
+        } else if (newCorrectionRatio >= 0.2) {
+          item.classList.add('dark-yellow');
+        } else if (newCorrectionRatio >= 0.1) {
+          item.classList.add('medium-yellow');
+        } else if (newCorrectionRatio > 0) {
+          item.classList.add('light-yellow');
+        }
+        
+        // Update processed counter if this was the first correction for this image
+        if (oldCorrectionsCount === 0 && metadata.corrections_count > 0) {
+          const counter = $('processed-counter');
+          const [processed, total] = counter.textContent.split('/').map(Number);
+          counter.textContent = `${processed + 1}/${total}`;
+        }
+      }
+
+      let currentTreeData = null;
+      // --- MODIFIED FUNCTION ---
+      // Accepts an optional node ID to select after loading. Defaults to root '0-0'.
+      async function loadTree(nodeToSelect = '0-0') {
+        const ns = nsSel.value; const model = modelSel.value; const ver = verSel.value; const id = imgSel.value; if (!ns || !model || !id) return;
+        statusEl.textContent = 'Loading tree…';
+        try {
+          const path = ver ? `/api/image/${encodeURIComponent(ns)}/${encodeURIComponent(model)}/${encodeURIComponent(ver)}/tree?image_id=${encodeURIComponent(id)}` : `/api/image/${encodeURIComponent(ns)}/${encodeURIComponent(model)}/tree?image_id=${encodeURIComponent(id)}`;
+          const data = await getJSON(path);
+          currentTreeData = data.tree;
+          updatedEl.textContent = `Updated at ${new Date(data.updated_at).toLocaleString()}`;
+          const root = nodeToHierarchy(data.tree);
+          renderTree(root);
+          // Load the specified node instead of always the root
+          loadNode(nodeToSelect);
+          renderFullImage(data.tree, data.root_image_url);
+          statusEl.textContent = '';
+        } catch (e) {
+          statusEl.textContent = 'No tree available yet';
+          d3.select(treeEl).selectAll('*').remove();
+          previewEl.innerHTML = '';
+          metaEl.innerHTML = '';
+          $('full-image').src = '';
+          d3.select('#bbox-overlay').selectAll('*').remove();
+        }
+      }
+
+      function highlightNode(nodeId) {
+          d3.select('.tree').selectAll('g.node circle')
+              .transition().duration(200)
+              .attr('r', d => d.data.id === nodeId ? 8 : 6)
+              .attr('fill', d => {
+                  if (d.data.id === nodeId) return 'var(--highlight)';
+                  return d.data.data?.children?.length ? 'var(--accent)' : 'var(--muted)';
+              });
+
+          d3.select('#bbox-overlay').selectAll('rect')
+              .filter(function() { return !d3.select(this).classed('comparison-box'); })
+              .transition().duration(200)
+              .attr('stroke', function() { return d3.select(this).attr('data-node-id') === nodeId ? 'var(--highlight)' : 'var(--accent)'; })
+              .attr('stroke-width', function() { return d3.select(this).attr('data-node-id') === nodeId ? 3 : 1.5; })
+              .attr('fill', function() { return d3.select(this).attr('data-node-id') === nodeId ? 'rgba(245, 158, 11, 0.3)' : 'rgba(96, 165, 250, 0.2)'; });
+      }
+
+      async function loadNode(nodeId) {
+        currentNodeId = nodeId;
+        highlightNode(nodeId);
+
+        const ns = nsSel.value; const model = modelSel.value; const ver = verSel.value; const id = imgSel.value; if (!ns || !model || !id) return;
+        try {
+          const path = ver ? `/api/image/${encodeURIComponent(ns)}/${encodeURIComponent(model)}/${encodeURIComponent(ver)}/node/${encodeURIComponent(nodeId)}?image_id=${encodeURIComponent(id)}` : `/api/image/${encodeURIComponent(ns)}/${encodeURIComponent(model)}/node/${encodeURIComponent(nodeId)}?image_id=${encodeURIComponent(id)}`;
+          const meta = await getJSON(path);
+          renderNode(meta);
+          renderComparisonView(meta);
+        } catch (e) {
+          previewEl.innerHTML = 'Node details not available.';
+          metaEl.innerHTML = '';
+          renderComparisonView(null);
+        }
+      }
+
+      nsSel.onchange = () => loadModels();
+      modelSel.onchange = () => loadVersions();
+      verSel.onchange = () => loadImages();
+      imgSel.onchange = () => loadTree();
+      $('refresh').onclick = () => loadTree();
+
+      function renderFullImage(tree, rootImageUrl) {
+        const imgContainer = $('full-image-container');
+        const img = $('full-image');
+        const overlay = d3.select('#bbox-overlay');
+        overlay.selectAll('*').remove();
+
+        if (!rootImageUrl) {
+            img.src = ""; return;
+        }
+
+        img.src = rootImageUrl;
+        img.onload = () => {
+            const containerStyles = window.getComputedStyle(imgContainer);
+            const paddingLeft = parseFloat(containerStyles.paddingLeft) || 0;
+            const paddingTop = parseFloat(containerStyles.paddingTop) || 0;
+            const paddingRight = parseFloat(containerStyles.paddingRight) || 0;
+            const paddingBottom = parseFloat(containerStyles.paddingBottom) || 0;
+
+            const contentW = imgContainer.clientWidth - paddingLeft - paddingRight;
+            const contentH = imgContainer.clientHeight - paddingTop - paddingBottom;
+            
+            const imgRatio = img.naturalWidth / img.naturalHeight;
+            const contentRatio = contentW / contentH;
+            let displayedW, displayedH, top, left;
+
+            if (imgRatio > contentRatio) {
+                displayedW = contentW;
+                displayedH = contentW / imgRatio;
+                top = (contentH - displayedH) / 2;
+                left = 0;
+            } else {
+                displayedH = contentH;
+                displayedW = contentH * imgRatio;
+                left = (contentW - displayedW) / 2;
+                top = 0;
+            }
+            
+            img.style.width = `${displayedW}px`;
+            img.style.height = `${displayedH}px`;
+            
+            const totalLeftOffset = left + paddingLeft;
+            const totalTopOffset = top + paddingTop;
+
+            overlay.attr('width', imgContainer.clientWidth)
+                   .attr('height', imgContainer.clientHeight);
+            
+            const g = overlay.append('g').attr('transform', `translate(${totalLeftOffset}, ${totalTopOffset})`);
+
+            fullImageInfo = {
+                g,
+                displayedW, displayedH,
+                originalW: tree['0-0']['root_size(wxh)'][0],
+                originalH: tree['0-0']['root_size(wxh)'][1]
+            };
+
+            Object.entries(tree).forEach(([id, node]) => {
+                const bbox = node.bbox_global_norm;
+                if (bbox) {
+                    const x = bbox[0] * displayedW;
+                    const y = bbox[1] * displayedH;
+                    const w = (bbox[2] - bbox[0]) * displayedW;
+                    const h = (bbox[3] - bbox[1]) * displayedH;
+                    g.append('rect')
+                        .attr('x', x).attr('y', y).attr('width', w).attr('height', h)
+                        .attr('fill', 'rgba(96, 165, 250, 0.2)')
+                        .attr('stroke', 'var(--accent)')
+                        .attr('stroke-width', 1.5)
+                        .attr('data-node-id', id)
+                        .style('cursor', 'pointer')
+                        .on('click', () => loadNode(id));
+                }
+            });
+            highlightNode(currentNodeId);
+            loadNode(currentNodeId); // Re-render comparison view for current node
+        };
+      }
+      
+      function renderComparisonView(meta) {
+        const infoEl = $('comparison-info');
+        infoEl.innerHTML = '';
+        
+        if (fullImageInfo.g) {
+            fullImageInfo.g.selectAll('.comparison-box').remove();
+        }
+
+        if (meta && meta.corrected_bbox && fullImageInfo.g) {
+            const { g, displayedW, originalW, displayedH, originalH } = fullImageInfo;
+            const scaleX = displayedW / originalW;
+            const scaleY = displayedH / originalH;
+
+            const orig = meta.bbox_global;
+            g.append('rect')
+                .attr('class', 'comparison-box')
+                .attr('x', orig[0] * scaleX)
+                .attr('y', orig[1] * scaleY)
+                .attr('width', (orig[2] - orig[0]) * scaleX)
+                .attr('height', (orig[3] - orig[1]) * scaleY)
+                .attr('fill', 'none')
+                .attr('stroke', 'var(--muted)')
+                .attr('stroke-width', 2)
+                .attr('stroke-dasharray', '4 4');
+
+            const corr = meta.corrected_bbox;
+            g.append('rect')
+                .attr('class', 'comparison-box')
+                .attr('x', corr[0] * scaleX)
+                .attr('y', corr[1] * scaleY)
+                .attr('width', (corr[2] - corr[0]) * scaleX)
+                .attr('height', (corr[3] - corr[1]) * scaleY)
+                .attr('fill', 'none')
+                .attr('stroke', 'var(--highlight)')
+                .attr('stroke-width', 2);
+            
+            infoEl.innerHTML = `<strong>Original BBox:</strong> [${orig.join(', ')}]<br>
+                                <strong>Corrected BBox:</strong> [${corr.join(', ')}]`;
+        }
+      }
+
+      // --- BBox Correction Feature ---
+      let selectMode = null;
+      let originalW = 0, originalH = 0;
+      let tlPoint = {x: 0, y: 0}, brPoint = {x: 0, y: 0};
+      let currentRect = null;
+      let handleMouseLeaveForCorrection; // To properly remove event listener
+      let pressTimer = null;
+      let isLongPress = false;
+      let startX = 0, startY = 0;
+      let isCtrlPressed = false;
+
+      async function openCorrectionModal(nodeId) {
+        if (typeof cv === 'undefined' || !cvReady) {
+          alert('OpenCV is not loaded yet. Please wait or refresh the page.');
+          return;
+        }
+        currentNodeId = nodeId;
+        const ns = nsSel.value, model = modelSel.value, ver = verSel.value, imgId = imgSel.value;
+        const path = ver ? `/api/image/${encodeURIComponent(ns)}/${encodeURIComponent(model)}/${encodeURIComponent(ver)}/node/${encodeURIComponent(nodeId)}?image_id=${encodeURIComponent(imgId)}` : `/api/image/${encodeURIComponent(ns)}/${encodeURIComponent(model)}/node/${encodeURIComponent(nodeId)}?image_id=${encodeURIComponent(imgId)}`;
+        const meta = await getJSON(path);
+        if (!meta.root_image_path) { alert("Root image path not found."); return; }
+
+        originalW = meta['root_size(wxh)'][0];
+        originalH = meta['root_size(wxh)'][1];
+        tlPoint = { x: meta.bbox_global[0], y: meta.bbox_global[1] };
+        brPoint = { x: meta.bbox_global[2], y: meta.bbox_global[3] };
+
+        $('modal-node-id').textContent = nodeId;
+        
+        // Populate metadata info
+        const metaInfoEl = $('modal-meta-info');
+        metaInfoEl.innerHTML = '';
+        if (meta.functionality?.with_context || meta.description?.with_context) {
+          if (meta.functionality?.with_context) {
+            const funcLabel = document.createElement('div');
+            funcLabel.className = 'label';
+            funcLabel.textContent = 'Functionality';
+            if (meta.functionality_revised) {
+              funcLabel.appendChild(document.createTextNode(' '));
+              funcLabel.appendChild(createRevisedBadge(meta.original_functionality));
+            }
+            metaInfoEl.appendChild(funcLabel);
+            const funcValue = document.createElement('div');
+            funcValue.className = 'value';
+            funcValue.textContent = meta.functionality.with_context;
+            metaInfoEl.appendChild(funcValue);
+          }
+          if (meta.description?.with_context) {
+            const descLabel = document.createElement('div');
+            descLabel.className = 'label';
+            descLabel.textContent = 'Description';
+            if (meta.description_revised) {
+              descLabel.appendChild(document.createTextNode(' '));
+              descLabel.appendChild(createRevisedBadge(meta.original_description));
+            }
+            metaInfoEl.appendChild(descLabel);
+            const descValue = document.createElement('div');
+            descValue.className = 'value';
+            descValue.textContent = meta.description.with_context;
+            metaInfoEl.appendChild(descValue);
+          }
+        } else {
+          metaInfoEl.innerHTML = '<div class="value" style="color: var(--muted); font-style: italic;">No metadata available</div>';
+        }
+        
+        const img = $('correction-image');
+        
+        $('correction-modal').style.display = 'flex';
+        img.src = meta.root_image_path;
+
+        img.onload = () => {
+          requestAnimationFrame(() => {
+            const imgContainer = $('correction-image-container');
+            const overlaySvg = $('correction-overlay');
+            const overlaySvgEl = d3.select(overlaySvg);
+
+            const imgRect = img.getBoundingClientRect();
+            const containerRect = imgContainer.getBoundingClientRect();
+            
+            const offsetLeft = imgRect.left - containerRect.left;
+            const offsetTop = imgRect.top - containerRect.top;
+
+            overlaySvg.style.left = `${offsetLeft}px`;
+            overlaySvg.style.top = `${offsetTop}px`;
+
+            overlaySvgEl.selectAll('*').remove();
+            overlaySvgEl.attr('width', imgRect.width).attr('height', imgRect.height);
+            
+            currentRect = overlaySvgEl.append('rect')
+              .attr('fill', 'rgba(255, 0, 0, 0.3)').attr('stroke', 'red').attr('stroke-width', 2);
+              
+            updateRect(imgRect.width, imgRect.height);
+            $('input-tl-x').value = tlPoint.x; $('input-tl-y').value = tlPoint.y;
+            $('input-br-x').value = brPoint.x; $('input-br-y').value = brPoint.y;
+            
+            // Attach listeners to the overlay for a stable coordinate system
+            overlaySvg.addEventListener('mousemove', handleMouseMove);
+            handleMouseLeaveForCorrection = () => {
+              $('zoom-canvas').getContext('2d').clearRect(0, 0, $('zoom-canvas').width, $('zoom-canvas').height);
+              $('cursor-coords-display').textContent = '';
+            };
+            overlaySvg.addEventListener('mouseleave', handleMouseLeaveForCorrection);
+            overlaySvg.addEventListener('mousedown', handleMouseDown);
+            overlaySvg.addEventListener('mouseup', handleMouseUp);
+          });
+        };
+      }
+
+      function closeModal() {
+        $('correction-modal').style.display = 'none';
+        const overlaySvg = $('correction-overlay');
+        overlaySvg.removeEventListener('mousemove', handleMouseMove);
+        if (handleMouseLeaveForCorrection) {
+          overlaySvg.removeEventListener('mouseleave', handleMouseLeaveForCorrection);
+        }
+        overlaySvg.removeEventListener('mousedown', handleMouseDown);
+        overlaySvg.removeEventListener('mouseup', handleMouseUp);
+        selectMode = null;
+      }
+
+      function startSelect(mode) {
+        selectMode = mode;
+        $('btn-select-tl').style.borderColor = (mode === 'tl') ? 'var(--accent)' : 'var(--border)';
+        $('btn-select-br').style.borderColor = (mode === 'br') ? 'var(--accent)' : 'var(--border)';
+      }
+
+      function handleMouseDown(e) {
+        if (!selectMode) return;
+        const overlayRect = e.currentTarget.getBoundingClientRect();
+        startX = e.clientX - overlayRect.left;
+        startY = e.clientY - overlayRect.top;
+        isCtrlPressed = e.ctrlKey;
+        isLongPress = false;
+        pressTimer = setTimeout(() => {
+          isLongPress = true;
+          $('loading-indicator').style.display = 'block';
+          if (isCtrlPressed) {
+            snapToCorner(startX, startY, overlayRect.width, overlayRect.height);
+          } else {
+            snapToLine(startX, startY, overlayRect.width, overlayRect.height);
+          }
+        }, 500);
+      }
+
+      function handleMouseUp(e) {
+        clearTimeout(pressTimer);
+        if (isLongPress) {
+          isLongPress = false;
+          return;
+        }
+        if (selectMode) {
+          const overlayRect = e.currentTarget.getBoundingClientRect();
+          const endX = e.clientX - overlayRect.left;
+          const endY = e.clientY - overlayRect.top;
+          const dist = Math.hypot(endX - startX, endY - startY);
+          if (dist < 5) {  // Threshold to detect non-drag click
+            handleImageClick(e);
+          }
+        }
+      }
+
+      function handleImageClick(e) {
+        if (!selectMode) return;
+        const overlayRect = e.currentTarget.getBoundingClientRect();
+        const x_norm = (e.clientX - overlayRect.left) / overlayRect.width;
+        const y_norm = (e.clientY - overlayRect.top) / overlayRect.height;
+        const pixelX = Math.round(x_norm * originalW);
+        const pixelY = Math.round(y_norm * originalH);
+
+        if (selectMode === 'tl') {
+          tlPoint.x = pixelX; tlPoint.y = pixelY;
+          $('input-tl-x').value = pixelX; $('input-tl-y').value = pixelY;
+          startSelect('br');
+        } else if (selectMode === 'br') {
+          brPoint.x = pixelX; brPoint.y = pixelY;
+          $('input-br-x').value = pixelX; $('input-br-y').value = pixelY;
+          selectMode = null;
+          $('btn-select-br').style.borderColor = 'var(--border)';
+        }
+        updateRect(overlayRect.width, overlayRect.height);
+      }
+
+      function updateFromInputs() {
+        tlPoint.x = parseInt($('input-tl-x').value) || 0;
+        tlPoint.y = parseInt($('input-tl-y').value) || 0;
+        brPoint.x = parseInt($('input-br-x').value) || 0;
+        brPoint.y = parseInt($('input-br-y').value) || 0;
+        const img = $('correction-image');
+        if (img.complete) {
+            updateRect(img.clientWidth, img.clientHeight);
+        }
+      }
+
+      function updateRect(displayedW, displayedH) {
+        const x1 = (tlPoint.x / originalW) * displayedW, y1 = (tlPoint.y / originalH) * displayedH;
+        const x2 = (brPoint.x / originalW) * displayedW, y2 = (brPoint.y / originalH) * displayedH;
+        const x = Math.min(x1, x2), y = Math.min(y1, y2);
+        const w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
+        currentRect.attr('x', x).attr('y', y).attr('width', w).attr('height', h);
+      }
+      
+      // --- MODIFIED FUNCTION ---
+      // Uses OpenCV and canvas for an edge-enhanced zoom preview.
+      function handleMouseMove(e) {
+        if (pressTimer) {
+          clearTimeout(pressTimer); // Cancel long press if moving
+        }
+        
+        const img = $('correction-image');
+        if (!img.complete || !cvReady) return;
+
+        const overlayRect = e.currentTarget.getBoundingClientRect();
+        const x = e.clientX - overlayRect.left;
+        const y = e.clientY - overlayRect.top;
+
+        const pixelX = Math.round((x / overlayRect.width) * originalW);
+        const pixelY = Math.round((y / overlayRect.height) * originalH);
+        $('cursor-coords-display').textContent = `Cursor: (${pixelX}, ${pixelY})`;
+        
+        // --- Canvas based zoom with sharpening ---
+        const zoomCanvas = $('zoom-canvas');
+        const zoomFactor = 3;
+        const previewSize = 200; // zoom-preview div size
+        const cropSize = previewSize / zoomFactor; // 50px
+        
+        zoomCanvas.width = cropSize;
+        zoomCanvas.height = cropSize;
+
+        const sourceCropX = pixelX - (cropSize / 2);
+        const sourceCropY = pixelY - (cropSize / 2);
+        
+        const tempCanvas = $('temp-canvas');
+        tempCanvas.width = cropSize;
+        tempCanvas.height = cropSize;
+        const tempCtx = tempCanvas.getContext('2d');
+        
+        // Draw the cropped section of the original image to a temporary canvas
+        tempCtx.drawImage(img, sourceCropX, sourceCropY, cropSize, cropSize, 0, 0, cropSize, cropSize);
+        
+        try {
+          // Read image data and apply sharpening
+          const imageData = tempCtx.getImageData(0, 0, cropSize, cropSize);
+          let src = cv.matFromImageData(imageData);
+          let dst = new cv.Mat();
+          
+          // Sharpening kernel
+          let M = cv.matFromArray(3, 3, cv.CV_32FC1, [0, -1, 0, -1, 5, -1, 0, -1, 0]);
+          let anchor = new cv.Point(-1, -1);
+          cv.filter2D(src, dst, cv.CV_8U, M, anchor, 0, cv.BORDER_DEFAULT);
+          
+          // Display the sharpened image on the zoom canvas
+          cv.imshow(zoomCanvas, dst);
+          
+          // Memory cleanup
+          src.delete();
+          dst.delete();
+          M.delete();
+        } catch(err) {
+            console.error(err);
+            // Fallback to just drawing the image if opencv fails
+            const zCtx = zoomCanvas.getContext('2d');
+            zCtx.drawImage(tempCanvas, 0, 0);
+        }
+      }
+
+      function snapToLine(x, y, displayedW, displayedH) {
+        const img = $('correction-image');
+        const canvas = $('temp-canvas');
+        canvas.width = img.clientWidth;
+        canvas.height = img.clientHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const windowSize = 200; // Window size in displayed pixels
+        const half = windowSize / 2;
+        let left = Math.max(0, x - half);
+        let top = Math.max(0, y - half);
+        if (left + windowSize > displayedW) left = displayedW - windowSize;
+        if (top + windowSize > displayedH) top = displayedH - windowSize;
+
+        const imageData = ctx.getImageData(left, top, windowSize, windowSize);
+        let src = cv.matFromImageData(imageData);
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+        let edges = new cv.Mat();
+        cv.Canny(gray, edges, 50, 150, 3, false);
+        let lines = new cv.Mat();
+        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 30, 10); // Tuned for borders
+
+        const localX = x - left;
+        const localY = y - top;
+        let closestDist = Infinity;
+        let snappedLocalX = localX;
+        let snappedLocalY = localY;
+
+        for (let i = 0; i < lines.rows; ++i) {
+          const x1 = lines.data32S[i * 4];
+          const y1 = lines.data32S[i * 4 + 1];
+          const x2 = lines.data32S[i * 4 + 2];
+          const y2 = lines.data32S[i * 4 + 3];
+          const pt = closestPointOnLineSegment(localX, localY, x1, y1, x2, y2);
+          const dist = distance(localX, localY, pt.x, pt.y);
+          if (dist < closestDist) {
+            closestDist = dist;
+            snappedLocalX = pt.x;
+            snappedLocalY = pt.y;
+          }
+        }
+
+        let snappedX = x;
+        let snappedY = y;
+        if (closestDist < 10 && lines.rows > 0) {
+          snappedX = left + snappedLocalX;
+          snappedY = top + snappedLocalY;
+        }
+
+        src.delete(); gray.delete(); edges.delete(); lines.delete();
+        $('loading-indicator').style.display = 'none';
+
+        const x_norm = snappedX / displayedW;
+        const y_norm = snappedY / displayedH;
+        const pixelX = Math.round(x_norm * originalW);
+        const pixelY = Math.round(y_norm * originalH);
+
+        if (selectMode === 'tl') {
+          tlPoint.x = pixelX; tlPoint.y = pixelY;
+          $('input-tl-x').value = pixelX; $('input-tl-y').value = pixelY;
+          startSelect('br');
+        } else if (selectMode === 'br') {
+          brPoint.x = pixelX; brPoint.y = pixelY;
+          $('input-br-x').value = pixelX; $('input-br-y').value = pixelY;
+          selectMode = null;
+          $('btn-select-br').style.borderColor = 'var(--border)';
+        }
+        updateRect(displayedW, displayedH);
+      }
+
+      function snapToCorner(x, y, displayedW, displayedH) {
+        const img = $('correction-image');
+        const canvas = $('temp-canvas');
+        canvas.width = img.clientWidth;
+        canvas.height = img.clientHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const windowSize = 200;
+        const half = windowSize / 2;
+        let left = Math.max(0, x - half);
+        let top = Math.max(0, y - half);
+        if (left + windowSize > displayedW) left = displayedW - windowSize;
+        if (top + windowSize > displayedH) top = displayedH - windowSize;
+
+        const imageData = ctx.getImageData(left, top, windowSize, windowSize);
+        let src = cv.matFromImageData(imageData);
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+        let blurred = new cv.Mat();
+        let ksize = new cv.Size(5, 5);
+        cv.GaussianBlur(gray, blurred, ksize, 0, 0, cv.BORDER_DEFAULT);
+
+        let corners = new cv.Mat();
+        cv.goodFeaturesToTrack(blurred, corners, 20, 0.01, 5, new cv.Mat(), 3, true, 0.04);
+
+        const localX = x - left;
+        const localY = y - top;
+        let closestDist = Infinity;
+        let snappedLocalX = localX;
+        let snappedLocalY = localY;
+
+        for (let i = 0; i < corners.rows; ++i) {
+          let cx = corners.data32F[i * 2];
+          let cy = corners.data32F[i * 2 + 1];
+          const dist = distance(localX, localY, cx, cy);
+          if (dist < closestDist) {
+            closestDist = dist;
+            snappedLocalX = cx;
+            snappedLocalY = cy;
+          }
+        }
+
+        let snappedX = x;
+        let snappedY = y;
+        if (closestDist < 10 && corners.rows > 0) {
+          snappedX = left + snappedLocalX;
+          snappedY = top + snappedLocalY;
+        }
+
+        src.delete(); gray.delete(); blurred.delete(); corners.delete();
+        $('loading-indicator').style.display = 'none';
+
+        const x_norm = snappedX / displayedW;
+        const y_norm = snappedY / displayedH;
+        const pixelX = Math.round(x_norm * originalW);
+        const pixelY = Math.round(y_norm * originalH);
+
+        if (selectMode === 'tl') {
+          tlPoint.x = pixelX; tlPoint.y = pixelY;
+          $('input-tl-x').value = pixelX; $('input-tl-y').value = pixelY;
+          startSelect('br');
+        } else if (selectMode === 'br') {
+          brPoint.x = pixelX; brPoint.y = pixelY;
+          $('input-br-x').value = pixelX; $('input-br-y').value = pixelY;
+          selectMode = null;
+          $('btn-select-br').style.borderColor = 'var(--border)';
+        }
+        updateRect(displayedW, displayedH);
+      }
+
+      function closestPointOnLineSegment(px, py, x1, y1, x2, y2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        if (dx === 0 && dy === 0) return {x: x1, y: y1};
+        const t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
+        const clampedT = Math.max(0, Math.min(1, t));
+        return {x: x1 + clampedT * dx, y: y1 + clampedT * dy};
+      }
+
+      function distance(x1, y1, x2, y2) {
+        return Math.hypot(x2 - x1, y2 - y1);
+      }
+
+      async function confirmCorrection() {
+          const final_tl_x = Math.min(parseInt($('input-tl-x').value), parseInt($('input-br-x').value));
+          const final_tl_y = Math.min(parseInt($('input-tl-y').value), parseInt($('input-br-y').value));
+          const final_br_x = Math.max(parseInt($('input-tl-x').value), parseInt($('input-br-x').value));
+          const final_br_y = Math.max(parseInt($('input-tl-y').value), parseInt($('input-br-y').value));
+
+          const new_bbox = [final_tl_x, final_tl_y, final_br_x, final_br_y];
+          const ns = nsSel.value, model = modelSel.value, ver = verSel.value, imgId = imgSel.value, nodeId = currentNodeId;
+          if (!ver) { alert("Version must be selected to save corrections."); return; }
+
+          try {
+              const encodedNs = encodeURIComponent(ns);
+              const encodedModel = encodeURIComponent(model);
+              const encodedVer = encodeURIComponent(ver);
+              const encodedNode = encodeURIComponent(nodeId);
+              const encodedImageId = encodeURIComponent(imgId);
+              const correctionUrl = `/api/image/${encodedNs}/${encodedModel}/${encodedVer}/node/${encodedNode}/correct?image_id=${encodedImageId}`;
+
+              const res = await fetch(correctionUrl, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ new_bbox, image_id: imgId })
+              });
+              if (!res.ok) throw new Error(`Server responded with ${res.status}: ${await res.text()}`);
+              const data = await res.json();
+              statusEl.textContent = `Correction saved: ${data.new_file}`;
+              setTimeout(() => statusEl.textContent = '', 3000);
+              
+              // Update the image card in the sidebar
+              updateImageCard(imgId);
+              
+              closeModal();
+              // --- MODIFIED CALL ---
+              // Reload the tree but stay focused on the currently edited node.
+              loadTree(currentNodeId); 
+          } catch (e) {
+              console.error("Error saving correction:", e);
+              statusEl.textContent = `Error: ${e.message}`;
+          }
+      }
+
+      (async () => {
+        await loadNamespaces();
+        if (nsSel.options.length) {
+          nsSel.value = nsSel.options[0].value;
+          await loadModels();
+        }
+      })();
+    </script>
+  </body>
+</html>

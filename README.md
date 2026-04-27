@@ -146,7 +146,7 @@ python utils/data_utils/autoguiv2/FuncElemGnd_eval_gen/21_convert_elemgnd_to_hf_
 
 ---
 
-### Step 3 — Generate FuncRegionGnd / FuncRegionQA Tasks
+### Step 3 — Generate FuncRegionGnd / FuncRegionCap Tasks
 
 Two-stage pipeline: semantic clustering → visual verification → question generation.
 
@@ -246,7 +246,7 @@ GUI Screenshots (any dataset)
 │  gnd Qs  │  │    text-based QA     │
 │          │  │                      │
 │ 3. Gen   │  │ → FuncRegionGnd      │
-│  cap Qs  │  │ → FuncRegionQA       │
+│  cap Qs  │  │ → FuncRegionCap      │
 │          │  └──────────────────────┘
 │ →FuncElem│
 │  Gnd/Cap │

@@ -1,0 +1,1010 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AutoGUIv2 Evaluation Visualizer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+      :root { --bg: #0b0f19; --panel: #121826; --text: #e2e8f0; --muted: #94a3b8; --accent: #60a5fa; --border: #1f2937; --highlight: #f59e0b; 
+              --success: #22c55e; --warning: #eab308; --error: #ef4444; }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial, "Apple Color Emoji", "Segoe UI Emoji"; background: var(--bg); color: var(--text); }
+      header { display: flex; align-items: center; gap: 16px; padding: 16px 20px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: rgba(11,15,25,0.9); backdrop-filter: blur(8px); z-index: 10; }
+      h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+      .row { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 64px); }
+      aside { border-right: 1px solid var(--border); background: var(--panel); overflow: auto; }
+      main { position: relative; overflow: auto; padding: 20px; }
+      .section { padding: 12px 12px 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .12em; display: flex; align-items: center; gap: 8px; }
+      .list { padding: 0 8px 16px; }
+      .item { padding: 10px 10px; margin: 6px 4px; background: #0f1625; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; transition: background .2s, border .2s; }
+      .item:hover { background: #121a2c; border-color: #2b3648; }
+      .item .title { font-size: 13px; font-weight: 600; }
+      .item .meta { margin-top: 4px; font-size: 12px; color: var(--muted); }
+      .toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); background: #0f1625; }
+      select, button { background: #0b1220; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; cursor: pointer; }
+      button.primary { background: #0d1b2f; border-color: #284163; color: #bcd7ff; }
+      .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+      .card { background: #0f1625; border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+      .card h2 { font-size: 14px; letter-spacing: .1em; color: var(--muted); margin: 0 0 12px; text-transform: uppercase; }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { padding: 8px; text-align: left; border-bottom: 1px solid var(--border); }
+      th { color: var(--muted); font-weight: 600; }
+      .value { color: var(--accent); text-align: right; }
+      .success { color: var(--success); }
+      .warning { color: var(--warning); }
+      .error { color: var(--error); }
+      .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+      .tab-button { padding: 8px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+      .tab-button.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+      .tab-content { display: none; }
+      .tab-content.active { display: block; }
+      .sample-details { display: flex; flex-direction: column; gap: 20px; }
+      .image-container { width: 100%; }
+      .image-container img, .image-container canvas { width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--border); }
+      .bbox-legend { margin-top: 8px; display: flex; gap: 12px; font-size: 12px; color: var(--muted); }
+      .legend-item { display: flex; align-items: center; gap: 6px; }
+      .legend-swatch { width: 14px; height: 4px; border-radius: 2px; display: inline-block; }
+      .legend-gt { background: #22c55e; }
+      .legend-pred { background: #ef4444; }
+      .legend-target { background: #f97316; }
+      .info-grid { display: grid; gap: 12px; }
+      .info-card { background: var(--panel); padding: 12px; border-radius: 8px; border: 1px solid var(--border); }
+      .info-card h3 { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+      .failure-section { margin-top: 20px; }
+      .failure-section select, .failure-section textarea { width: 100%; margin-bottom: 10px; }
+      .add-type { display: flex; gap: 8px; margin-bottom: 10px; }
+      .add-type input { flex: 1; }
+      .spinner { border: 4px solid var(--border); border-top: 4px solid var(--accent); border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; margin: auto; }
+      @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+      @media (max-width: 768px) {
+        .row { grid-template-columns: 1fr; }
+        aside { border-right: none; border-bottom: 1px solid var(--border); max-height: 30vh; overflow: auto; }
+        .metrics-grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>AutoGUIv2 Evaluation Visualizer v1.1</h1>
+      <button id="theme-toggle">🌙</button>
+      <button id="debug-toggle">Debug Off</button>
+      <button id="test-data">Load Test Data</button>
+      <button id="clear-mock">Clear Mock</button>
+      <button id="reset-local">Reset Local Data</button>
+    </header>
+    <div class="row">
+      <aside>
+        <div class="section">Tasks</div>
+        <div class="list" id="task-list"></div>
+        <div class="section">Models</div>
+        <div class="list" id="model-list"></div>
+        <div class="section">Evaluations</div>
+        <div class="list" id="eval-list"></div>
+      </aside>
+      <main>
+        <div id="status-message"></div>
+        <div class="toolbar">
+          <label>Task</label>
+          <select id="task"></select>
+          <label>Model</label>
+          <select id="model"></select>
+          <label>Evaluation</label>
+          <select id="evaluation"></select>
+          <button class="primary" id="refresh">Refresh</button>
+          <button class="primary" id="auto-refresh">Auto-Refresh</button>
+        </div>
+        <div class="tabs">
+          <button class="tab-button active" data-tab="metrics">Metrics Overview</button>
+          <button class="tab-button" data-tab="samples">Inspect Samples</button>
+          <button class="tab-button" data-tab="summary">Failure Analysis Summary</button>
+        </div>
+        <div id="metrics-tab" class="tab-content active">
+          <div id="metrics-container" class="metrics-grid"></div>
+        </div>
+        <div id="samples-tab" class="tab-content">
+          <select id="sample-selector"></select>
+          <div id="sample-details" class="sample-details"></div>
+          <div class="failure-section">
+            <h3>Failure Analysis</h3>
+            <select id="error-type"></select>
+            <div class="add-type">
+              <input id="new-type" placeholder="New error type">
+              <button onclick="addErrorType()">Add</button>
+            </div>
+            <textarea id="failure-reason" placeholder="Detailed reason..."></textarea>
+            <button class="primary" onclick="saveFailureReason()">Save</button>
+          </div>
+        </div>
+        <div id="summary-tab" class="tab-content">
+          <select id="filter-type">
+            <option value="">All Error Types</option>
+            <!-- populated dynamically -->
+          </select>
+          <input id="search-input" placeholder="Search entry or reason..." style="margin-left: 10px; width: 200px;">
+          <div id="failure-stats" style="margin-bottom: 20px;"></div>
+          <canvas id="error-pie" width="300" height="300" style="margin-top: 20px;"></canvas>
+          <table id="failure-table">
+            <thead>
+              <tr>
+                <th data-sort="entry_id">Entry ID</th>
+                <th data-sort="error_type">Error Type</th>
+                <th data-sort="iou">IoU</th>
+                <th data-sort="reason">Reason</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+          <button class="primary" id="export-csv" style="margin-left: 10px;">Export CSV</button>
+          <button class="primary" id="export-all-csv" style="margin-left: 10px;">Export All CSV</button>
+        </div>
+      </main>
+    </div>
+    <footer style="padding: 10px; text-align: center; color: var(--muted); font-size: 12px;">
+      Last updated: <span id="last-updated"></span>
+      <span id="mock-note" style="color: var(--warning);">Mock Mode Active</span>
+      <a href="/README.md" target="_blank">Documentation</a>
+    </footer>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const taskSel = $('task');
+      const modelSel = $('model');
+      const evalSel = $('evaluation');
+
+      let debugMode = false;
+
+      async function getJSON(url) {
+        if (debugMode) console.log(`Loading ${url}`);
+        try {
+          const r = await fetch(url);
+          const text = await r.text();
+          if (!r.ok) throw new Error(`HTTP ${r.status}: ${text}`);
+          if (text === '[]' || text === '{}') {
+            console.log('Empty response from server');
+            // Handle in load functions
+          }
+          console.log(`Response from ${url}:`, text);
+          return JSON.parse(text);
+        } catch (e) {
+          console.error(`Error loading ${url}:`, e);
+          alert(`Failed to load data: ${e.message}. Check console for details.`);
+          throw e;
+        }
+      }
+
+      const mockData = {
+        tasks: ['funcgnd', 'descgnd'],
+        models: {
+          funcgnd: ['gpt-4o', 'gemini-1.5'],
+          descgnd: ['claude']
+        },
+        evaluations: {
+          funcgnd: {
+            'gpt-4o': [{timestamp: '2023-01-01_12-00-00', updated_at: new Date().toISOString()}],
+            'gemini-1.5': [{timestamp: '2023-01-02_13-00-00', updated_at: new Date().toISOString()}]
+          },
+          descgnd: {
+            'claude': [{timestamp: '2023-01-03_14-00-00', updated_at: new Date().toISOString()}]
+          }
+        },
+        metrics: {
+          'funcgnd_gpt-4o_2023-01-01_12-00-00': {
+            total: 100,
+            successful: 85,
+            success_rate: 0.85,
+            avg_iou: 0.72,
+            center_acc: 0.88,
+            iou_thresholds: { 'iou@0.1': 0.95, 'iou@0.3': 0.90, 'iou@0.5': 0.75, 'iou@0.7': 0.60, 'iou@0.9': 0.40 },
+            action_types: {
+              'click': { total: 50, successful: 45, success_rate: 0.9, avg_iou: 0.8, center_acc: 0.92 },
+              'scroll': { total: 50, successful: 40, success_rate: 0.8, avg_iou: 0.64, center_acc: 0.84 }
+            },
+            decomposed: {
+              by_density: {
+                sparse: { total: 30, successful: 28, avg_iou: 0.85, center_acc: 0.93, iou_thresholds: { 'iou@0.5': 0.9 } },
+                medium: { total: 40, successful: 34, avg_iou: 0.75, center_acc: 0.85, iou_thresholds: { 'iou@0.5': 0.8 } },
+                dense: { total: 30, successful: 23, avg_iou: 0.6, center_acc: 0.77, iou_thresholds: { 'iou@0.5': 0.6 } }
+              },
+              by_num_similar_elements: {
+                '1-2': { total: 50, successful: 45, avg_iou: 0.8, center_acc: 0.9, iou_thresholds: { 'iou@0.5': 0.85 } },
+                '3-4': { total: 30, successful: 25, avg_iou: 0.7, center_acc: 0.83, iou_thresholds: { 'iou@0.5': 0.75 } },
+                '5-6': { total: 15, successful: 10, avg_iou: 0.6, center_acc: 0.67, iou_thresholds: { 'iou@0.5': 0.6 } },
+                '7+': { total: 5, successful: 5, avg_iou: 0.5, center_acc: 1, iou_thresholds: { 'iou@0.5': 0.5 } }
+              }
+            }
+          }
+        },
+        samples: {
+          // Mock samples for each evaluation
+          'funcgnd_gpt-4o_2023-01-01_12-00-00': ['entry1', 'entry2'],
+          'funcgnd_gemini-1.5_2023-01-02_13-00-00': ['entry3', 'entry4']
+        },
+        sampleDetails: {
+          'entry1': { prompt: 'Mock prompt 1', response: 'Mock response 1', gt_bbox: [[10, 10, 50, 50]], pred_bbox: [[15, 15, 45, 45]], target_bbox: [[12, 12, 48, 48]], iou: 0.92, center_acc: true, failure_reason: '[Mock Error] Reason 1' },
+          'entry2': { prompt: 'Mock prompt 2', response: 'Mock response 2', gt_bbox: [[20, 20, 60, 60]], pred_bbox: [[25, 25, 55, 55]], target_bbox: [[22, 22, 58, 58]], iou: 0.88, center_acc: false, failure_reason: '[Mock Error] Reason 2' },
+          'entry3': { prompt: 'Mock prompt 3', response: 'Mock response 3', gt_bbox: [[30, 30, 70, 70]], pred_bbox: [[35, 35, 65, 65]], target_bbox: [[32, 32, 68, 68]], iou: 0.95, center_acc: true, failure_reason: '[Mock Error] Reason 3' },
+          'entry4': { prompt: 'Mock prompt 4', response: 'Mock response 4', gt_bbox: [[40, 40, 80, 80]], pred_bbox: [[45, 45, 75, 75]], target_bbox: [[42, 42, 78, 78]], iou: 0.80, center_acc: false, failure_reason: '[Mock Error] Reason 4' }
+        },
+        failureReasons: {
+          'entry1': '[Mock Error] Reason 1',
+          'entry2': '[Mock Error] Reason 2',
+          'entry3': '[Mock Error] Reason 3',
+          'entry4': '[Mock Error] Reason 4'
+        }
+      };
+
+      // Expand mockData with full metrics structure, samples with image_base64 (use placeholder), failure reasons with IoU in string for extraction.
+      // For image, use a base64 placeholder for a small image.
+      mockData.sampleDetails['entry1'].image_base64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='; // 1x1 pixel
+      // Add more fields as needed.
+
+      async function loadTasks() {
+        try {
+          let data;
+          if (localStorage.getItem('useMock') === 'true') {
+            data = {tasks: mockData.tasks};
+          } else {
+            data = await getJSON('/api/tasks');
+          }
+          console.log('Loaded tasks:', data.tasks);
+          if (data.message) {
+            alert(data.message);
+          }
+          const list = $('task-list'); list.innerHTML = '';
+          taskSel.innerHTML = '';
+          if (data.tasks.length === 0) {
+            list.innerHTML = '<div class="item" style="text-align: center; color: var(--muted);">No tasks available. Run evaluation scripts and ensure eval_results directory has data.</div>';
+            return;
+          }
+          for (const task of data.tasks) {
+            const opt = document.createElement('option'); opt.value = task; opt.textContent = task; taskSel.appendChild(opt);
+            const item = document.createElement('div'); item.className = 'item'; item.textContent = task; item.onclick = () => { taskSel.value = task; loadModels(); }; list.appendChild(item);
+          }
+          if (data.tasks.length) {
+            taskSel.value = data.tasks[0];
+            loadModels();
+          }
+        } catch (e) {
+          $('task-list').innerHTML = '<div class="item error">Error loading tasks: ' + e.message + '</div>';
+        }
+      }
+
+      async function loadModels() {
+        const task = taskSel.value; if (!task) return;
+        try {
+          let data;
+          if (localStorage.getItem('useMock') === 'true') {
+            data = {models: mockData.models[task] || []};
+          } else {
+            data = await getJSON(`/api/models?task=${encodeURIComponent(task)}`);
+          }
+          console.log('Loaded models for task:', task, data.models);
+          const list = $('model-list'); list.innerHTML = '';
+          modelSel.innerHTML = '';
+          if (data.models.length === 0) {
+            list.innerHTML = '<div class="item" style="text-align: center; color: var(--muted);">No models available for this task.</div>';
+            return;
+          }
+          for (const model of data.models) {
+            const opt = document.createElement('option'); opt.value = model; opt.textContent = model; modelSel.appendChild(opt);
+            const item = document.createElement('div'); item.className = 'item'; item.textContent = model; item.onclick = () => { modelSel.value = model; loadEvaluations(); }; list.appendChild(item);
+          }
+          if (data.models.length) {
+            modelSel.value = data.models[0];
+            loadEvaluations();
+          }
+        } catch (e) {
+          $('model-list').innerHTML = '<div class="item error">Error loading models: ' + e.message + '</div>';
+        }
+      }
+
+      async function loadEvaluations() {
+        const task = taskSel.value; const model = modelSel.value; if (!task || !model) return;
+        try {
+          let data;
+          if (localStorage.getItem('useMock') === 'true') {
+            data = {evaluations: mockData.evaluations[task] ? mockData.evaluations[task][model] || [] : []};
+          } else {
+            data = await getJSON(`/api/evaluations?task=${encodeURIComponent(task)}&model=${encodeURIComponent(model)}`);
+          }
+          console.log('Loaded evaluations for task:', task, model, data.evaluations);
+          const list = $('eval-list'); list.innerHTML = '';
+          evalSel.innerHTML = '';
+          if (data.evaluations.length === 0) {
+            list.innerHTML = '<div class="item" style="text-align: center; color: var(--muted);">No evaluations available for this model.</div>';
+            return;
+          }
+          for (const ev of data.evaluations) {
+            const opt = document.createElement('option'); opt.value = ev.timestamp; opt.textContent = ev.timestamp; evalSel.appendChild(opt);
+            const item = document.createElement('div'); item.className = 'item';
+            const title = document.createElement('div'); title.className = 'title'; title.textContent = ev.timestamp;
+            const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = `Updated: ${new Date(ev.updated_at).toLocaleString()}`;
+            item.appendChild(title); item.appendChild(meta);
+            item.onclick = () => { evalSel.value = ev.timestamp; loadMetrics(); };
+            list.appendChild(item);
+          }
+          if (data.evaluations.length) {
+            evalSel.value = data.evaluations[0].timestamp;
+            updateLastUpdated();
+            loadMetrics();
+          }
+        } catch (e) {
+          $('eval-list').innerHTML = '<div class="item error">Error loading evaluations: ' + e.message + '</div>';
+        }
+      }
+
+      async function loadMetrics() {
+        const task = taskSel.value; const model = modelSel.value; const evaluation = evalSel.value; if (!task || !model || !evaluation) {
+          $('metrics-container').innerHTML = '<div style="text-align: center; color: var(--muted);">Select task, model, and evaluation</div>';
+          return;
+        }
+        try {
+          $('metrics-container').innerHTML = '<div class="spinner"></div>';
+          let data;
+          if (localStorage.getItem('useMock') === 'true') {
+            const key = `${task}_${model}_${evaluation}`;
+            data = {metrics: mockData.metrics[key] || {}};
+          } else {
+            data = await getJSON(`/api/metrics?task=${encodeURIComponent(task)}&model=${encodeURIComponent(model)}&evaluation=${encodeURIComponent(evaluation)}`);
+          }
+          console.log('Loaded metrics for task:', task, model, evaluation, data.metrics);
+          const container = $('metrics-container'); container.innerHTML = '';
+          
+          // Overall Metrics
+          const overallCard = document.createElement('div'); overallCard.className = 'card';
+          overallCard.innerHTML = '<h2>Overall Metrics</h2>';
+          const overallTable = document.createElement('table');
+          const metrics = data.metrics;
+          const rows = [
+            ['Total Entries', metrics.total],
+            ['Successful', `${metrics.successful} (${(metrics.success_rate * 100).toFixed(1)}%)`],
+            ['Average IoU', metrics.avg_iou.toFixed(3)],
+            ['Center Accuracy', `${(metrics.center_acc * 100).toFixed(1)}%`]
+          ];
+          rows.forEach(([label, value]) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${label}</td><td class="value">${value}</td>`;
+            overallTable.appendChild(tr);
+          });
+          overallCard.appendChild(overallTable);
+          container.appendChild(overallCard);
+          
+          // IoU Thresholds
+          const iouCard = document.createElement('div'); iouCard.className = 'card';
+          iouCard.innerHTML = '<h2>IoU Thresholds</h2>';
+          const iouTable = document.createElement('table');
+          Object.entries(metrics.iou_thresholds).forEach(([threshold, acc]) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${threshold}</td><td class="value">${(acc * 100).toFixed(1)}%</td>`;
+            iouTable.appendChild(tr);
+          });
+          iouCard.appendChild(iouTable);
+          container.appendChild(iouCard);
+          
+          // Action Types
+          if (metrics.action_types) {
+            const actionCard = document.createElement('div'); actionCard.className = 'card';
+            actionCard.innerHTML = '<h2>Action Types</h2>';
+            const actionTable = document.createElement('table');
+            actionTable.innerHTML = '<tr><th>Type</th><th>Total</th><th>Success</th><th>Avg IoU</th><th>Center Acc</th></tr>';
+            Object.entries(metrics.action_types).forEach(([type, data]) => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `<td>${type}</td>
+                              <td class="value">${data.total}</td>
+                              <td class="value">${(data.success_rate * 100).toFixed(1)}%</td>
+                              <td class="value">${data.avg_iou.toFixed(3)}</td>
+                              <td class="value">${(data.center_acc * 100).toFixed(1)}%</td>`;
+              actionTable.appendChild(tr);
+            });
+            actionCard.appendChild(actionTable);
+            container.appendChild(actionCard);
+          }
+          
+          // Density Breakdown
+          if (metrics.decomposed && metrics.decomposed.by_density) {
+            const densityCard = document.createElement('div'); densityCard.className = 'card';
+            densityCard.innerHTML = '<h2>By Density</h2>';
+            const densityTable = document.createElement('table');
+            densityTable.innerHTML = '<tr><th>Density</th><th>Total</th><th>Success</th><th>Avg IoU</th><th>Center Acc</th><th>IoU@0.5</th></tr>';
+            Object.entries(metrics.decomposed.by_density).forEach(([density, data]) => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `<td>${density}</td>
+                              <td class="value">${data.total}</td>
+                              <td class="value">${(data.success_rate * 100).toFixed(1)}%</td>
+                              <td class="value">${data.avg_iou.toFixed(3)}</td>
+                              <td class="value">${(data.center_acc * 100).toFixed(1)}%</td>
+                              <td class="value">${(data.iou_thresholds['iou@0.5'] * 100).toFixed(1)}%</td>`;
+              densityTable.appendChild(tr);
+            });
+            densityCard.appendChild(densityTable);
+            container.appendChild(densityCard);
+          }
+          
+          // Num Similar Elements
+          if (metrics.decomposed && metrics.decomposed.by_num_similar_elements) {
+            const numCard = document.createElement('div'); numCard.className = 'card';
+            numCard.innerHTML = '<h2>By Num Similar Elements</h2>';
+            const numTable = document.createElement('table');
+            numTable.innerHTML = '<tr><th>Range</th><th>Total</th><th>Success</th><th>Avg IoU</th><th>Center Acc</th><th>IoU@0.5</th></tr>';
+            Object.entries(metrics.decomposed.by_num_similar_elements).forEach(([range, data]) => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `<td>${range}</td>
+                              <td class="value">${data.total}</td>
+                              <td class="value">${(data.success_rate * 100).toFixed(1)}%</td>
+                              <td class="value">${data.avg_iou.toFixed(3)}</td>
+                              <td class="value">${(data.center_acc * 100).toFixed(1)}%</td>
+                              <td class="value">${(data.iou_thresholds['iou@0.5'] * 100).toFixed(1)}%</td>`;
+              numTable.appendChild(tr);
+            });
+            numCard.appendChild(numTable);
+            container.appendChild(numCard);
+          }
+        } catch (e) {
+          container.innerHTML = '<div class="card error">Error loading metrics: ' + e.message + '</div>';
+        }
+      }
+
+      taskSel.onchange = () => loadModels();
+      modelSel.onchange = () => loadEvaluations();
+      let currentEvals = [];
+      evalSel.onchange = () => {
+        loadMetrics();
+        if (selectedEval) updateLastUpdated();
+      };
+      $('refresh').onclick = () => loadMetrics();
+  
+      let currentTab = 'metrics';
+      let currentSample = null;
+      let pendingChanges = false;
+      let currentFailureReason = '';
+      let currentErrorType = '';
+      let refreshInterval = null;
+  
+      function switchTab(tab) {
+        if (tab === currentTab) return;
+        if (pendingChanges) {
+          saveFailureReason(true); // Auto-save
+        }
+        document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+        document.querySelector(`.tab-button[data-tab="${tab}"]`).classList.add('active');
+        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+        $(`${tab}-tab`).classList.add('active');
+        currentTab = tab;
+        if (tab === 'samples') loadSamples();
+        if (tab === 'summary') loadFailureSummary();
+      }
+  
+      document.querySelectorAll('.tab-button').forEach(btn => {
+        btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+      });
+  
+      async function loadSamples() {
+        const task = taskSel.value; const model = modelSel.value; const evaluation = evalSel.value; if (!task || !model || !evaluation) return;
+        try {
+          let data;
+          if (localStorage.getItem('useMock') === 'true') {
+            const key = `${task}_${model}_${evaluation}`;
+            data = {samples: mockData.samples[key] || []};
+          } else {
+            data = await getJSON(`/api/samples?task=${encodeURIComponent(task)}&model=${encodeURIComponent(model)}&evaluation=${encodeURIComponent(evaluation)}`);
+          }
+          console.log('Loaded samples for task:', task, model, evaluation, data.samples);
+          const sel = $('sample-selector'); sel.innerHTML = '';
+          if (data.samples.length === 0) {
+            sel.innerHTML = '<option value="">No samples available for this evaluation.</option>';
+            return;
+          }
+          data.samples.forEach(id => {
+            const opt = document.createElement('option'); opt.value = id; opt.textContent = id; sel.appendChild(opt);
+          });
+          if (data.samples.length) {
+            sel.value = data.samples[0];
+            loadSampleDetails();
+          }
+        } catch (e) {
+          $('sample-selector').innerHTML = '<option value="">Error loading samples: ' + e.message + '</option>';
+        }
+      }
+  
+      async function loadSampleDetails() {
+        if (pendingChanges) {
+          saveFailureReason(true); // Auto-save before loading new
+        }
+        const task = taskSel.value; const model = modelSel.value; const evaluation = evalSel.value;
+        const entry_id = $('sample-selector').value; if (!entry_id) return;
+        try {
+          let data;
+          if (localStorage.getItem('useMock') === 'true') {
+            data = mockData.sampleDetails[entry_id] || {};
+          } else {
+            data = await getJSON(`/api/sample?task=${encodeURIComponent(task)}&model=${encodeURIComponent(model)}&evaluation=${encodeURIComponent(evaluation)}&entry_id=${encodeURIComponent(entry_id)}`);
+          }
+          console.log('Loaded sample details for entry:', entry_id, data);
+          currentSample = data;
+          const details = $('sample-details'); details.innerHTML = '';
+
+          if (data.error) {
+            details.innerHTML = `<div class="item error">${data.error}</div>`;
+            return;
+          }
+          
+          // Image with bboxes
+          const imgDiv = document.createElement('div');
+          imgDiv.className = 'image-container';
+          const img = new Image();
+          if (data.image_base64) {
+            img.src = `data:image/jpeg;base64,${data.image_base64}`;
+          } else {
+             imgDiv.textContent = "No image available";
+          }
+
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+
+            function getBBox(bboxData) {
+                if (!bboxData) return null;
+                let bbox = null;
+                if (Array.isArray(bboxData) && bboxData.length > 0 && Array.isArray(bboxData[0])) {
+                  bbox = bboxData[0];
+                } else if (Array.isArray(bboxData) && (bboxData.length === 4 || bboxData.length === 2) && typeof bboxData[0] === 'number') {
+                  bbox = bboxData;
+                }
+                if (!bbox) return null;
+                const maxVal = Math.max(...bbox.map(v => Math.abs(v)));
+                if (maxVal > 1.0) {
+                  return bbox.map(v => v / 1000);
+                }
+                return bbox;
+            }
+
+            function drawGeometry(geo, color, label) {
+                if (!geo) return;
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2;
+                ctx.fillStyle = color;
+                ctx.font = '12px Inter, sans-serif';
+                if (geo.length === 4) {
+                    const [x1, y1, x2, y2] = geo;
+                    const px1 = x1 * canvas.width;
+                    const py1 = y1 * canvas.height;
+                    const pw = (x2 - x1) * canvas.width;
+                    const ph = (y2 - y1) * canvas.height;
+                    ctx.strokeRect(px1, py1, pw, ph);
+                    if (label) {
+                      ctx.fillText(label, px1 + 4, py1 + 14);
+                    }
+                } else if (geo.length === 2) {
+                    const [x, y] = geo;
+                    const px = x * canvas.width;
+                    const py = y * canvas.height;
+                    ctx.beginPath();
+                    ctx.arc(px, py, 8, 0, 2 * Math.PI);
+                    ctx.stroke();
+                    if (label) {
+                      ctx.fillText(label, px + 6, py - 6);
+                    }
+                }
+            }
+
+            // Draw GT bbox (green)
+            drawGeometry(getBBox(data.gt_bbox), '#22c55e', 'GT');
+
+            // Draw Pred bbox (red)
+            drawGeometry(getBBox(data.pred_bbox), '#ef4444', 'Pred');
+
+            // Draw Target bbox (orange)
+            drawGeometry(getBBox(data.target_bbox), '#f97316', 'Target');
+
+            imgDiv.appendChild(canvas);
+            const legend = document.createElement('div');
+            legend.className = 'bbox-legend';
+            legend.innerHTML = `
+              <span class="legend-item"><span class="legend-swatch legend-gt"></span>GT</span>
+              <span class="legend-item"><span class="legend-swatch legend-pred"></span>Prediction</span>
+              <span class="legend-item"><span class="legend-swatch legend-target"></span>Target</span>
+            `;
+            imgDiv.appendChild(legend);
+          };
+          // Handle image load error or missing image
+          if (data.image_base64) {
+              details.appendChild(imgDiv);
+          } else {
+              details.appendChild(document.createTextNode(data.image_error || "Image data missing"));
+          }
+          
+          // Info grid
+          const infoGrid = document.createElement('div'); infoGrid.className = 'info-grid';
+          const fields = [
+            {title: 'Prompt', content: data.prompt || ''},
+            {title: 'Response', content: data.response || ''},
+            {title: 'Target BBox', content: JSON.stringify(data.target_bbox)},
+            {title: 'GT BBox', content: JSON.stringify(data.gt_bbox)},
+            {title: 'Pred BBox', content: JSON.stringify(data.pred_bbox)},
+            {title: 'IoU', content: data.iou?.toFixed(3) || 'N/A'},
+            {title: 'Center Acc', content: data.center_acc ? 'Yes' : 'No'}
+          ];
+          let failureDisplay = data.failure_reason || 'None';
+          if (data.failure_reason && data.failure_reason.startsWith('[')) {
+            const [typePart, detailPart] = data.failure_reason.split('] ');
+            failureDisplay = `Type: ${typePart.slice(1)}\nDetail: ${detailPart || ''}`;
+          }
+          fields.push({title: 'Failure Reason', content: failureDisplay});
+          fields.forEach(field => {
+            const card = document.createElement('div'); card.className = 'info-card';
+            card.innerHTML = `<h3>${field.title}</h3><pre>${field.content}</pre>`;
+            infoGrid.appendChild(card);
+          });
+          details.appendChild(infoGrid);
+          
+          // Load existing failure reason
+          currentFailureReason = data.failure_reason || '';
+          $('failure-reason').value = currentFailureReason;
+          const errorTypeSel = $('error-type');
+          if (currentFailureReason.startsWith('[')) {
+            currentErrorType = currentFailureReason.split('] ')[0].slice(1);
+            $('error-type').value = currentErrorType;
+            $('failure-reason').value = currentFailureReason.split('] ')[1] || '';
+          } else {
+            currentErrorType = '';
+          }
+          pendingChanges = false;
+        } catch (e) {
+          $('sample-details').innerHTML = '<div class="item error">Error loading sample details: ' + e.message + '</div>';
+        }
+      }
+
+      // Error types management
+      let errorTypes = JSON.parse(localStorage.getItem('errorTypes')) || [
+        'Parse Error',
+        'Wrong Element',
+        'Ambiguous Reference',
+        'Hallucination',
+        'Incorrect Bounding Box',
+        'Missed Element',
+        'Other'
+      ];
+      function populateErrorTypes() {
+        const sel = $('error-type'); sel.innerHTML = '<option value="">Select Error Type</option>';
+        errorTypes.forEach(type => {
+          const opt = document.createElement('option'); opt.value = type; opt.textContent = type; sel.appendChild(opt);
+        });
+      }
+      function addErrorType() {
+        const newType = $('new-type').value.trim();
+        if (newType && !errorTypes.includes(newType)) {
+          errorTypes.push(newType);
+          localStorage.setItem('errorTypes', JSON.stringify(errorTypes));
+          populateErrorTypes();
+          $('new-type').value = '';
+        }
+      }
+      populateErrorTypes();
+
+      // Auto-save logic
+      $('sample-selector').addEventListener('change', loadSampleDetails);
+      $('failure-reason').addEventListener('input', () => { pendingChanges = true; });
+      $('error-type').addEventListener('change', () => { pendingChanges = true; });
+
+      async function saveFailureReason(auto = false) {
+        if (!currentSample) return;
+        const errorType = $('error-type').value;
+        const reason = $('failure-reason').value.trim();
+        let failure_reason = '';
+        if (errorType || reason) {
+          failure_reason = reason ? `[${errorType}] ${reason}` : `[${errorType}]`;
+        }
+        if (failure_reason === currentFailureReason) return; // No change
+        
+        // Optional confirmation for auto-save
+        if (auto && !confirm('Unsaved changes detected. Save now?')) return;
+        
+        const task = taskSel.value; const model = modelSel.value; const evaluation = evalSel.value;
+        try {
+          await fetch('/api/update-failure', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task, model, evaluation, entry_id: currentSample.entry_id, failure_reason })
+          });
+          currentFailureReason = failure_reason;
+          pendingChanges = false;
+          
+          // Show toast
+          const toast = document.createElement('div');
+          const savedPath = `${task} > ${model} > ${evaluation} > ${currentSample.entry_id}`;
+          const savedContent = `Type: ${errorType || 'None'}, Reason: ${reason || 'None'}`;
+          toast.innerHTML = `<div>${auto ? 'Auto-saved' : 'Saved'}</div><div style="font-size:0.8em;opacity:0.8">${savedPath}</div><div style="font-size:0.8em;opacity:0.8">${savedContent}</div>`;
+          toast.style.position = 'fixed';
+          toast.style.bottom = '20px';
+          toast.style.right = '20px';
+          toast.style.padding = '10px 20px';
+          toast.style.background = 'rgba(34, 197, 94, 0.9)'; // var(--success) with opacity
+          toast.style.color = 'white';
+          toast.style.borderRadius = '8px';
+          toast.style.zIndex = '1000';
+          toast.style.transition = 'opacity 0.5s ease';
+          document.body.appendChild(toast);
+          
+          // Fade out and remove
+          setTimeout(() => {
+              toast.style.opacity = '0';
+              setTimeout(() => toast.remove(), 500);
+          }, 3000);
+
+        } catch (e) {
+          alert('Failed to save failure reason: ' + e.message);
+        }
+      }
+
+      async function loadFailureSummary() {
+        const task = taskSel.value; const model = modelSel.value; const evaluation = evalSel.value; if (!task || !model || !evaluation) return;
+        try {
+          let data;
+          if (localStorage.getItem('useMock') === 'true') {
+            data = {reasons: mockData.failureReasons};
+          } else {
+            data = await getJSON(`/api/failure-reasons?task=${encodeURIComponent(task)}&model=${encodeURIComponent(model)}&evaluation=${encodeURIComponent(evaluation)}`);
+          }
+          console.log('Loaded failure reasons for task:', task, model, evaluation, data.reasons);
+          const tableBody = $('failure-table').querySelector('tbody');
+          tableBody.innerHTML = '';
+          const rows = [];
+          Object.entries(data.reasons).forEach(([entry_id, reason]) => {
+            let error_type = '';
+            let detail = reason;
+            let iou = 0.0; // Placeholder for IoU
+            if (reason.startsWith('[') && reason.includes(']')) {
+              error_type = reason.split(']')[0].slice(1);
+              detail = reason.split(']')[1].trim();
+              // Attempt to extract IoU if it's part of the reason string
+              const iouMatch = reason.match(/\[.*?\]\s*IoU:\s*(\d+\.\d+)/);
+              if (iouMatch && iouMatch[1]) {
+                iou = parseFloat(iouMatch[1]);
+              }
+            }
+            rows.push({entry_id, error_type, reason: detail, iou: iou});
+          });
+          
+          // Initial sort by entry_id
+          rows.sort((a, b) => a.entry_id.localeCompare(b.entry_id));
+          rows.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${row.entry_id}</td><td>${row.error_type}</td><td class="value">${row.iou.toFixed(3)}</td><td>${row.reason}</td>`;
+            let colorClass = row.iou > 0.5 ? 'success' : row.iou > 0.1 ? 'warning' : 'error';
+            tr.classList.add(colorClass);
+            tableBody.appendChild(tr);
+          });
+          
+          // Sorting functionality
+          document.querySelectorAll('#failure-table th').forEach(th => {
+            th.addEventListener('click', () => {
+              const sortKey = th.dataset.sort;
+              rows.sort((a, b) => {
+                if (sortKey === 'entry_id') {
+                  return a.entry_id.localeCompare(b.entry_id);
+                } else if (sortKey === 'error_type') {
+                  return a.error_type.localeCompare(b.error_type);
+                } else if (sortKey === 'iou') {
+                  return a.iou - b.iou;
+                } else { // reason
+                  return a.reason.localeCompare(b.reason);
+                }
+              });
+              tableBody.innerHTML = '';
+              rows.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${row.entry_id}</td><td>${row.error_type}</td><td class="value">${row.iou.toFixed(3)}</td><td>${row.reason}</td>`;
+                let colorClass = row.iou > 0.5 ? 'success' : row.iou > 0.1 ? 'warning' : 'error';
+                tr.classList.add(colorClass);
+                tableBody.appendChild(tr);
+              });
+            });
+          });
+
+          // Make entries clickable
+          document.querySelectorAll('#failure-table tbody tr').forEach(tr => {
+            tr.addEventListener('click', () => {
+              $('sample-selector').value = row.entry_id;
+              switchTab('samples');
+              loadSampleDetails();
+            });
+          });
+
+          const uniqueTypes = [...new Set(rows.map(r => r.error_type))].sort();
+          const filterSel = $('filter-type');
+          filterSel.innerHTML = '<option value="">All Error Types</option>';
+          uniqueTypes.forEach(type => {
+            const opt = document.createElement('option'); opt.value = type; opt.textContent = type; filterSel.appendChild(opt);
+          });
+          
+          const sampleData = await getJSON(`/api/samples?task=${encodeURIComponent(task)}&model=${encodeURIComponent(model)}&evaluation=${encodeURIComponent(evaluation)}`);
+          const totalSamples = sampleData.samples.length;
+
+          filterSel.addEventListener('change', async () => {
+            const selectedType = filterSel.value;
+            const searchTerm = $('search-input').value.toLowerCase();
+            const filteredRows = selectedType ? rows.filter(r => r.error_type === selectedType) : rows;
+            const searchedRows = filteredRows.filter(r => r.entry_id.toLowerCase().includes(searchTerm) || r.reason.toLowerCase().includes(searchTerm));
+            // Then sort and render searchedRows
+            searchedRows.sort((a, b) => a.entry_id.localeCompare(b.entry_id));
+            tableBody.innerHTML = '';
+            searchedRows.forEach(row => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `<td>${row.entry_id}</td><td>${row.error_type}</td><td class="value">${row.iou.toFixed(3)}</td><td>${row.reason}</td>`;
+              let colorClass = row.iou > 0.5 ? 'success' : row.iou > 0.1 ? 'warning' : 'error';
+              tr.classList.add(colorClass);
+              tr.addEventListener('click', () => {
+                $('sample-selector').value = row.entry_id;
+                switchTab('samples');
+                loadSampleDetails();
+              });
+              tableBody.appendChild(tr);
+            });
+
+            const stats = {};
+            searchedRows.forEach(r => {
+              stats[r.error_type] = (stats[r.error_type] || 0) + 1;
+            });
+            const pieCtx = $('error-pie').getContext('2d');
+            // Update chart config:
+            window.errorPie = new Chart(pieCtx, {
+              type: 'doughnut',
+              data: {
+                labels: Object.keys(stats),
+                datasets: [{
+                  data: Object.values(stats),
+                  backgroundColor: ['#3b82f6', '#eab308', '#ef4444', '#22c55e', '#a855f7', '#ec4899', '#14b8a6'],
+                  borderWidth: 1,
+                  borderColor: 'var(--border)'
+                }]
+              },
+              options: {
+                responsive: true,
+                plugins: {
+                  legend: { position: 'right', labels: { color: 'var(--text)' } },
+                  tooltip: {
+                    callbacks: {
+                      label: (context) => {
+                        const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                        const percentage = ((context.raw / total) * 100).toFixed(1) + '%';
+                        return `${context.label}: ${context.raw} (${percentage})`;
+                      }
+                    }
+                  }
+                }
+              }
+            });
+
+            const statsDiv = $('failure-stats');
+            statsDiv.innerHTML = `<strong>Total Samples:</strong> ${totalSamples} | <strong>Assigned:</strong> ${searchedRows.length} (${(searchedRows.length / totalSamples * 100).toFixed(1)}%)<br>`;
+            Object.entries(stats).forEach(([type, count]) => {
+              statsDiv.innerHTML += `<strong>${type}:</strong> ${count}<br>`;
+            });
+          });
+          
+          // Trigger initial render
+          filterSel.dispatchEvent(new Event('change'));
+        } catch (e) {
+          $('failure-table').innerHTML = '<div class="item error">Error loading failure summary: ' + e.message + '</div>';
+        }
+      }
+
+      (async () => {
+        console.clear();
+        try {
+          const health = await getJSON('/health');
+          console.log('Server health:', health);
+          if (health.status !== 'ok') {
+            $('status-message').innerHTML = '<div class="card error">Server error: ' + health.message + '</div>';
+            return; // Stop loading
+          }
+        } catch (e) {
+          $('status-message').innerHTML = '<div class="card error">Server not reachable: ' + e.message + '</div>';
+          return;
+        }
+        await loadTasks();
+      })();
+
+      $('export-csv').addEventListener('click', () => {
+        const csv = 'Entry ID,Error Type,IoU,Reason\n' + 
+          rows.map(r => `"${r.entry_id}","${r.error_type}",${r.iou.toFixed(3)},"${r.reason.replace(/"/g, '""')}"`).join('\n');
+        const blob = new Blob([csv], {type: 'text/csv'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'failure_summary.csv'; a.click();
+        URL.revokeObjectURL(url);
+      });
+
+      $('export-all-csv').addEventListener('click', () => {
+        const csv = 'Entry ID,Error Type,IoU,Reason\n' + 
+          rows.map(r => `"${r.entry_id}","${r.error_type}",${r.iou.toFixed(3)},"${r.reason.replace(/"/g, '""')}"`).join('\n');
+        const blob = new Blob([csv], {type: 'text/csv'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'failure_summary_all.csv'; a.click();
+        URL.revokeObjectURL(url);
+      });
+
+      window.addEventListener('beforeunload', (e) => {
+        if (pendingChanges) {
+          saveFailureReason(true);
+          e.preventDefault();
+          e.returnValue = '';
+        }
+      });
+
+      window.onerror = function(message, source, lineno, colno, error) {
+        alert('An error occurred: ' + message + ' at line ' + lineno);
+        console.error(error);
+        return true;
+      };
+
+      $('auto-refresh').addEventListener('click', () => {
+        if (refreshInterval) {
+          clearInterval(refreshInterval);
+          refreshInterval = null;
+          $('auto-refresh').textContent = 'Auto-Refresh';
+        } else {
+          refreshInterval = setInterval(() => {
+            if (currentTab === 'metrics') { loadMetrics(); updateLastUpdated(); }
+            else if (currentTab === 'samples') loadSamples();
+            else if (currentTab === 'summary') loadFailureSummary();
+          }, 30000); // 30s
+          $('auto-refresh').textContent = 'Stop Refresh';
+        }
+      });
+
+      const root = document.documentElement;
+      const themes = {
+        dark: { '--bg': '#0b0f19', '--panel': '#121826', '--text': '#e2e8f0', '--muted': '#94a3b8', '--accent': '#60a5fa', '--border': '#1f2937' },
+        light: { '--bg': '#ffffff', '--panel': '#f3f4f6', '--text': '#1f2937', '--muted': '#6b7280', '--accent': '#3b82f6', '--border': '#d1d5db' }
+      };
+      let currentTheme = 'dark';
+      $('theme-toggle').addEventListener('click', () => {
+        currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
+        Object.entries(themes[currentTheme]).forEach(([key, value]) => root.style.setProperty(key, value));
+        $('theme-toggle').textContent = currentTheme === 'dark' ? '🌙' : '☀️';
+      });
+
+      $('debug-toggle').addEventListener('click', () => {
+        debugMode = !debugMode;
+        $('debug-toggle').textContent = 'Debug ' + (debugMode ? 'On' : 'Off');
+      });
+
+      function updateLastUpdated() {
+        const evaluation = evalSel.value;
+        const selectedEval = currentEvals.find(ev => ev.timestamp === evaluation);
+        if (selectedEval) $('last-updated').textContent = new Date(selectedEval.updated_at).toLocaleString();
+      }
+
+      $('test-data').addEventListener('click', () => {
+        localStorage.setItem('useMock', 'true');
+        location.reload();
+      });
+
+      $('clear-mock').addEventListener('click', () => {
+        localStorage.removeItem('useMock');
+        location.reload();
+      });
+
+      $('reset-local').addEventListener('click', () => {
+        localStorage.clear();
+        location.reload();
+      });
+
+      if (localStorage.getItem('useMock') === 'true') {
+        console.log('Mock mode activated');
+        $('mock-note').style.display = 'block';
+      } else {
+        $('mock-note').style.display = 'none';
+      }
+      console.log('UI loaded successfully!');
+    </script>
+  </body>
+</html>

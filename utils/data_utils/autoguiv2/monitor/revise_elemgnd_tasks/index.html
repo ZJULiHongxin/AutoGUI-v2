@@ -1,0 +1,1154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FuncElemGnd Task Revising UI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script async src="https://docs.opencv.org/4.x/opencv.js" onload="cvReady = true;"></script>
+    <style>
+      :root {
+        --bg: #0b0f19;
+        --panel: #121826;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --accent: #60a5fa;
+        --border: #1f2937;
+        --highlight: #f59e0b;
+        --success: #22c55e;
+        --warning: #eab308;
+        --error: #ef4444;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial, "Apple Color Emoji", "Segoe UI Emoji"; background: var(--bg); color: var(--text); }
+
+      /* Header */
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 24px;
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        background: rgba(11,15,25,0.95);
+        backdrop-filter: blur(8px);
+        z-index: 10;
+      }
+      .header-left { display: flex; align-items: center; gap: 16px; }
+      .header-right { display: flex; align-items: center; gap: 12px; }
+      h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+      #status { color: var(--success); font-size: 12px; font-weight: 500; }
+
+      /* Stats bar */
+      .stats-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 24px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--border);
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .stats-group {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      .stat-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        padding: 4px 10px;
+        border-radius: 6px;
+        background: rgba(255,255,255,0.03);
+      }
+      .stat-item .label { color: var(--muted); }
+      .stat-item .value { font-weight: 600; }
+      .stat-item.modified .value { color: var(--warning); }
+      .stat-item.abandoned .value { color: var(--error); }
+      .stat-item.untouched .value { color: var(--muted); }
+      .stat-item.total .value { color: var(--accent); }
+      .stat-item.resolution .value { color: var(--accent); }
+
+      /* Main container */
+      .container { max-width: 1400px; margin: 0 auto; padding: 16px 24px; }
+
+      /* Controls row */
+      .controls-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr 140px;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      .selector {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .selector label {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: .1em;
+        font-weight: 500;
+      }
+      select, input, textarea {
+        background: var(--panel);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 13px;
+        width: 100%;
+        transition: border-color 0.2s;
+      }
+      select:hover, input:hover, textarea:hover { border-color: var(--accent); }
+      select:focus, input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+
+      /* Navigation row */
+      .navigation {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+      button {
+        background: var(--accent);
+        color: var(--bg);
+        border: none;
+        border-radius: 8px;
+        padding: 10px 18px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 500;
+        transition: opacity 0.2s, transform 0.1s;
+      }
+      button:hover { opacity: 0.9; }
+      button:active { transform: scale(0.98); }
+      button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); }
+      button.secondary:hover { border-color: var(--accent); }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: .05em;
+        background: rgba(96,165,250,0.1);
+        color: var(--accent);
+      }
+      .abandoned-toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-left: auto;
+        padding: 6px 12px;
+        border-radius: 8px;
+        background: rgba(239,68,68,0.1);
+        border: 1px solid rgba(239,68,68,0.3);
+      }
+      .abandoned-toggle span { font-size: 12px; color: var(--error); font-weight: 500; }
+      .abandoned-toggle input { width: auto; }
+
+      /* Image container */
+      .image-container {
+        position: relative;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+        background: #0a0e16;
+        margin-bottom: 16px;
+        min-height: 300px;
+      }
+      #screenshot { max-width: 100%; max-height: 65vh; object-fit: contain; border-radius: 8px; }
+      #bbox-overlay { position: absolute; top: 0; left: 0; pointer-events: none; }
+
+      /* Fields section */
+      .fields { display: grid; gap: 16px; }
+      .field { display: flex; flex-direction: column; gap: 6px; }
+      .field > label {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: .1em;
+        font-weight: 500;
+      }
+      textarea { min-height: 70px; resize: vertical; line-height: 1.5; }
+
+      /* Bbox section */
+      .bbox-section {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      .bbox-item {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .bbox-item label {
+        color: var(--muted);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: .05em;
+      }
+      .bbox-item input {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12px;
+        padding: 8px 10px;
+      }
+      .bbox-item.modified input { border-color: var(--warning); }
+      .bbox-item.original input { border-color: var(--muted); opacity: 0.7; }
+
+      /* Corrections file path */
+      .corrections-path {
+        font-size: 11px;
+        color: var(--muted);
+        padding: 8px 12px;
+        background: rgba(255,255,255,0.02);
+        border-radius: 6px;
+        margin-top: 12px;
+        word-break: break-all;
+      }
+
+      /* Modal styles */
+      .modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0,0,0,0.85);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+      }
+      .modal-content {
+        background: var(--panel);
+        border-radius: 16px;
+        padding: 24px;
+        max-width: 90%;
+        max-height: 90vh;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border: 1px solid var(--border);
+      }
+      .modal-content h3 { margin: 0 0 8px; font-size: 18px; }
+      .close {
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        cursor: pointer;
+        font-size: 24px;
+        color: var(--muted);
+        transition: color 0.2s;
+      }
+      .close:hover { color: var(--text); }
+      .modal-grid {
+        display: grid;
+        grid-template-columns: 280px 1fr;
+        gap: 20px;
+        margin-top: 15px;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .modal-controls {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        overflow-y: auto;
+        min-height: 0;
+      }
+      #correction-image-container {
+        position: relative;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 0;
+        overflow: hidden;
+        background: #0a0e16;
+        border-radius: 8px;
+      }
+      #correction-image {
+        max-width: 100%;
+        max-height: 100%;
+      }
+      #correction-overlay {
+        position: absolute;
+        cursor: crosshair;
+      }
+      #zoom-preview-container h4 {
+        margin: 12px 0 6px;
+        font-size: 11px;
+        letter-spacing: .1em;
+        color: var(--muted);
+        text-transform: uppercase;
+      }
+      #zoom-preview {
+        width: 200px;
+        height: 200px;
+        border: 1px solid var(--border);
+        background-color: var(--bg);
+        position: relative;
+        overflow: hidden;
+        border-radius: 8px;
+      }
+      #zoom-canvas {
+        width: 100%;
+        height: 100%;
+        image-rendering: pixelated;
+        image-rendering: -moz-crisp-edges;
+        image-rendering: crisp-edges;
+      }
+      #zoom-preview::before, #zoom-preview::after {
+        content: '';
+        position: absolute;
+        background: rgba(255, 0, 0, 0.7);
+        z-index: 1;
+      }
+      #zoom-preview::before { left: 50%; top: 0; width: 1px; height: 100%; transform: translateX(-50%); }
+      #zoom-preview::after { top: 50%; left: 0; height: 1px; width: 100%; transform: translateY(-50%); }
+      .coord-input { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
+      .coord-input label { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); gap: 4px; }
+      .coord-input input { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; width: 100%; }
+      .action-buttons { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); flex-shrink: 0; }
+      .action-buttons button.primary { background: var(--accent); color: white; }
+      .action-buttons button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); }
+      #loading-indicator {
+        display: none;
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0,0,0,0.8);
+        padding: 12px 24px;
+        border-radius: 8px;
+        color: white;
+        font-size: 13px;
+        z-index: 10;
+      }
+      #cursor-coords-display {
+        font-size: 12px;
+        color: var(--accent);
+        font-family: monospace;
+        height: 1.5em;
+        padding: 4px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="header-left">
+        <h1>FuncElemGnd Task Reviser</h1>
+      </div>
+      <div class="header-right">
+        <span id="status"></span>
+      </div>
+    </header>
+
+    <!-- Stats Bar -->
+    <div class="stats-bar">
+      <div class="stats-group">
+        <div class="stat-item modified">
+          <span class="label">Modified:</span>
+          <span class="value" id="stat-modified">0</span>
+        </div>
+        <div class="stat-item abandoned">
+          <span class="label">Abandoned:</span>
+          <span class="value" id="stat-abandoned">0</span>
+        </div>
+        <div class="stat-item untouched">
+          <span class="label">Untouched:</span>
+          <span class="value" id="stat-untouched">0</span>
+        </div>
+        <div class="stat-item total">
+          <span class="label">Total:</span>
+          <span class="value" id="stat-total">0</span>
+        </div>
+      </div>
+      <div class="stats-group">
+        <div class="stat-item resolution">
+          <span class="label">Resolution:</span>
+          <span class="value" id="stat-resolution">-</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="container">
+      <!-- Controls -->
+      <div class="controls-row">
+        <div class="selector">
+          <label>Dataset</label>
+          <select id="dataset-select"></select>
+        </div>
+        <div class="selector">
+          <label>Sample</label>
+          <select id="sample-select"></select>
+        </div>
+        <div class="selector">
+          <label>Action Type</label>
+          <select id="action-select"></select>
+        </div>
+      </div>
+
+      <!-- Navigation -->
+      <div class="navigation">
+        <button id="prev-btn">Previous</button>
+        <span class="badge" id="progress">0 / 0</span>
+        <button id="next-btn">Next</button>
+        <button class="secondary" id="fix-bbox">Fix BBox</button>
+        <label class="abandoned-toggle">
+          <input type="checkbox" id="abandoned-toggle" />
+          <span>Abandoned</span>
+        </label>
+      </div>
+
+      <!-- Image Display -->
+      <div class="image-container" id="full-image-container">
+        <img id="screenshot" src="" alt="Screenshot" />
+        <svg id="bbox-overlay"></svg>
+      </div>
+
+      <!-- Task Fields -->
+      <div class="fields">
+        <div class="field">
+          <label>Original Task</label>
+          <textarea id="original-task" rows="3" readonly></textarea>
+        </div>
+        <div class="field">
+          <label>Modified Task</label>
+          <textarea id="modified-task" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label>Bounding Boxes</label>
+          <div class="bbox-section">
+            <div class="bbox-item modified">
+              <label>Modified (normalized 0-1000)</label>
+              <input id="modified-bbox" type="text" />
+            </div>
+            <div class="bbox-item modified">
+              <label>Modified (pixels)</label>
+              <input id="modified-bbox-px" type="text" readonly />
+            </div>
+            <div class="bbox-item original">
+              <label>Original (normalized 0-1000)</label>
+              <input id="original-bbox" type="text" readonly />
+            </div>
+            <div class="bbox-item original">
+              <label>Original (pixels)</label>
+              <input id="original-bbox-px" type="text" readonly />
+            </div>
+          </div>
+          <div style="margin-top: 12px;">
+            <button class="secondary" id="apply-bbox">Apply Modified Box</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="corrections-path" id="corrections-file"></div>
+    </div>
+
+    <!-- Correction Modal -->
+    <div id="correction-modal" class="modal">
+      <div class="modal-content">
+        <span class="close" onclick="closeModal()">&times;</span>
+        <h3>Correct Bounding Box</h3>
+        <p style="color: var(--muted); margin-top: 0; font-size: 13px;">Click "Select Top-Left", then click on the image. Then "Select Bottom-Right". Long-press for auto-snap to borders. Hold Ctrl + long-press for auto-snap to corners.</p>
+
+        <div class="modal-grid">
+          <div class="modal-controls">
+            <button id="btn-select-tl" onclick="startSelect('tl')">Select Top-Left</button>
+            <button id="btn-select-br" onclick="startSelect('br')">Select Bottom-Right</button>
+            <div class="coord-input">
+              <label>TL X: <input id="input-tl-x" type="number" oninput="updateFromInputs()"></label>
+              <label>TL Y: <input id="input-tl-y" type="number" oninput="updateFromInputs()"></label>
+              <label>BR X: <input id="input-br-x" type="number" oninput="updateFromInputs()"></label>
+              <label>BR Y: <input id="input-br-y" type="number" oninput="updateFromInputs()"></label>
+            </div>
+            <div id="cursor-coords-display"></div>
+            <div id="zoom-preview-container">
+              <h4>Zoom Preview</h4>
+              <div id="zoom-preview"><canvas id="zoom-canvas"></canvas></div>
+            </div>
+          </div>
+          <div id="correction-image-container">
+            <img id="correction-image" src="" />
+            <svg id="correction-overlay"></svg>
+            <div id="loading-indicator">Detecting...</div>
+          </div>
+        </div>
+
+        <div class="action-buttons">
+          <button class="secondary" onclick="closeModal()">Cancel</button>
+          <button class="primary" onclick="confirmCorrection()">Confirm</button>
+        </div>
+      </div>
+    </div>
+    <canvas id="temp-canvas" style="display:none;"></canvas>
+
+    <script>
+      // ---- App state ----
+      const $ = (id) => document.getElementById(id);
+      const datasetSel = $('dataset-select');
+      const sampleSel = $('sample-select');
+      const actionSel = $('action-select');
+      const statusEl = $('status');
+      const progressEl = $('progress');
+      const screenshotImg = $('screenshot');
+      const overlaySvg = d3.select('#bbox-overlay');
+      const correctionsFileEl = $('corrections-file');
+
+      let cvReady = false;
+      let currentDataset = '';
+      let samples = [];
+      let currentIndex = 0;
+      let currentSample = null;
+      let modifiedQuestionsByAction = {};
+      let originalBboxNorm = null;
+      let modifiedBboxNorm = null;
+
+      // For pixel-space correction modal
+      let selectMode = null;
+      let originalW = 0, originalH = 0;
+      let tlPoint = {x: 0, y: 0}, brPoint = {x: 0, y: 0};
+      let currentRect = null;
+      let currentOrigRect = null;
+      let handleMouseLeaveForCorrection;
+      let pressTimer = null;
+      let isLongPress = false;
+      let startX = 0, startY = 0;
+      let isCtrlPressed = false;
+
+      function setStatus(msg) { statusEl.textContent = msg || ''; }
+
+      async function getJSON(url) {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+      }
+
+      function normToPixel(b, W, H) {
+        if (!b || b.length !== 4) return [0,0,0,0];
+        return [
+          Math.round(b[0] * W / 1000),
+          Math.round(b[1] * H / 1000),
+          Math.round(b[2] * W / 1000),
+          Math.round(b[3] * H / 1000),
+        ];
+      }
+      function pixelToNorm(b, W, H) {
+        if (!b || b.length !== 4) return [0,0,0,0];
+        return [
+          Math.round(b[0] * 1000 / W),
+          Math.round(b[1] * 1000 / H),
+          Math.round(b[2] * 1000 / W),
+          Math.round(b[3] * 1000 / H),
+        ];
+      }
+
+      async function loadDatasets() {
+        const data = await getJSON('/api/datasets');
+        datasetSel.innerHTML = '';
+        (data.datasets || []).forEach(ds => {
+          const opt = document.createElement('option');
+          opt.value = ds; opt.textContent = ds;
+          datasetSel.appendChild(opt);
+        });
+        if (datasetSel.options.length) {
+          currentDataset = datasetSel.value = datasetSel.options[0].value;
+          await loadSamples();
+        } else {
+          setStatus('No datasets found');
+        }
+      }
+
+      async function loadSamples() {
+        if (!currentDataset) return;
+        const data = await getJSON(`/api/images?dataset=${encodeURIComponent(currentDataset)}`);
+        samples = data.images || [];
+        sampleSel.innerHTML = '';
+        samples.forEach((s, idx) => {
+          const opt = document.createElement('option');
+          opt.value = idx;
+          const baseLabel = s.label || `${s.image_key} g${s.group_idx} q${s.q_idx}`;
+          const statusEmoji = s.status === 'untouched' ? '' : s.status === 'modified' ? '* ' : 'X ';
+          opt.textContent = `${statusEmoji}${baseLabel}`;
+          opt.setAttribute('data-status', s.status);
+          sampleSel.appendChild(opt);
+        });
+        updateStats();
+        if (samples.length) {
+          currentIndex = 0;
+          sampleSel.value = '0';
+          await loadSampleByIndex(0);
+        }
+      }
+
+      function updateProgress() {
+        progressEl.textContent = samples.length ? `${currentIndex + 1} / ${samples.length}` : '0 / 0';
+      }
+
+      function updateStats() {
+        let modified = 0, abandoned = 0, untouched = 0;
+        samples.forEach(s => {
+          if (s.status === 'modified') modified++;
+          else if (s.status === 'abandoned') abandoned++;
+          else untouched++;
+        });
+        $('stat-modified').textContent = modified;
+        $('stat-abandoned').textContent = abandoned;
+        $('stat-untouched').textContent = untouched;
+        $('stat-total').textContent = samples.length;
+      }
+
+      function updateResolution() {
+        const el = $('stat-resolution');
+        if (originalW && originalH) {
+          el.textContent = `${originalW} x ${originalH}`;
+        } else {
+          el.textContent = '-';
+        }
+      }
+
+      async function loadSampleByIndex(idx) {
+        if (!samples.length) return;
+        const s = samples[idx];
+        const action = actionSel.value || 'clicking';
+        const data = await getJSON(`/api/sample?dataset=${encodeURIComponent(currentDataset)}&image_key=${encodeURIComponent(s.image_key)}&group_idx=${s.group_idx}&q_idx=${s.q_idx}&action_type=${encodeURIComponent(action)}`);
+        currentSample = { ...data, ...s };
+
+        // action types
+        actionSel.innerHTML = '';
+        (data.available_action_types || []).forEach(a => {
+          const opt = document.createElement('option');
+          opt.value = a; opt.textContent = a;
+          actionSel.appendChild(opt);
+        });
+        actionSel.value = data.action_type || (actionSel.options[0]?.value || 'clicking');
+
+        // image
+        if (data.image_base64) {
+          screenshotImg.src = `data:image/jpeg;base64,${data.image_base64}`;
+        } else {
+          screenshotImg.src = '';
+        }
+
+        // bbox + questions
+        originalBboxNorm = Array.isArray(data.original_bbox) ? data.original_bbox : [0,0,0,0];
+        modifiedBboxNorm = Array.isArray(data.modified_bbox) ? data.modified_bbox : originalBboxNorm;
+        $('modified-bbox').value = JSON.stringify(modifiedBboxNorm);
+        $('original-bbox').value = JSON.stringify(originalBboxNorm);
+
+        modifiedQuestionsByAction = (data.modified_questions_by_action && typeof data.modified_questions_by_action === 'object') ? {...data.modified_questions_by_action} : {};
+        $('original-task').value = data.original_question || '';
+        $('modified-task').value = data.modified_question || data.original_question || '';
+
+        // Set abandoned toggle state
+        $('abandoned-toggle').checked = data.abandoned || false;
+
+        // Set original size for accurate rectification
+        const size = data.image_size || [];
+        originalW = size[0] || 0;
+        originalH = size[1] || 0;
+
+        // show corrections file path for manual checking
+        if (data.corrections_file) {
+          correctionsFileEl.textContent = `Corrections: ${data.corrections_file}`;
+        } else {
+          correctionsFileEl.textContent = '';
+        }
+
+        // Update pixel boxes (unnormalized) once we know originalW/H
+        if (originalW && originalH) {
+          $('original-bbox-px').value = JSON.stringify(normToPixel(originalBboxNorm, originalW, originalH));
+          $('modified-bbox-px').value = JSON.stringify(normToPixel(modifiedBboxNorm, originalW, originalH));
+        } else {
+          $('original-bbox-px').value = '';
+          $('modified-bbox-px').value = '';
+        }
+
+        screenshotImg.onload = () => {
+          renderFullOverlay();
+        };
+        updateProgress();
+        updateResolution();
+        setStatus('Loaded');
+      }
+
+      function renderFullOverlay() {
+        overlaySvg.selectAll('*').remove();
+        const container = $('full-image-container');
+        const img = screenshotImg;
+        if (!img.src) return;
+
+        const imgRect = img.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        const left = imgRect.left - containerRect.left;
+        const top = imgRect.top - containerRect.top;
+
+        overlaySvg
+          .attr('width', container.clientWidth)
+          .attr('height', container.clientHeight);
+
+        const g = overlaySvg.append('g').attr('transform', `translate(${left}, ${top})`);
+
+        const drawNormRect = (bboxNorm, stroke, fill, dash=null) => {
+          if (!bboxNorm || bboxNorm.length !== 4) return;
+          const x1 = bboxNorm[0] / 1000 * imgRect.width;
+          const y1 = bboxNorm[1] / 1000 * imgRect.height;
+          const x2 = bboxNorm[2] / 1000 * imgRect.width;
+          const y2 = bboxNorm[3] / 1000 * imgRect.height;
+          const r = g.append('rect')
+            .attr('x', x1).attr('y', y1).attr('width', Math.max(0, x2-x1)).attr('height', Math.max(0, y2-y1))
+            .attr('fill', fill).attr('stroke', stroke).attr('stroke-width', 2);
+          if (dash) r.attr('stroke-dasharray', dash);
+        };
+
+        drawNormRect(originalBboxNorm, 'rgba(148,163,184,0.9)', 'rgba(148,163,184,0.05)', '5 4');
+        drawNormRect(modifiedBboxNorm, 'rgba(245,158,11,1)', 'rgba(245,158,11,0.08)', null);
+      }
+
+      async function saveCurrentChanges() {
+        if (!currentSample) return;
+        const act = currentSample.action_type || 'clicking';
+        modifiedQuestionsByAction[act] = $('modified-task').value;
+
+        let bbox = null;
+        try {
+          bbox = JSON.parse($('modified-bbox').value);
+        } catch (e) {
+          setStatus('Invalid bbox JSON');
+          return;
+        }
+        await fetch('/api/save_correction', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            dataset: currentDataset,
+            image_key: currentSample.image_key,
+            group_idx: currentSample.group_idx,
+            q_idx: currentSample.q_idx,
+            modified_bbox: bbox,
+            modified_questions_by_action: modifiedQuestionsByAction,
+            abandoned: $('abandoned-toggle').checked
+          })
+        });
+        setStatus('Saved');
+      }
+
+      // ---- UI events ----
+      datasetSel.onchange = async () => { await saveCurrentChanges(); currentDataset = datasetSel.value; await loadSamples(); };
+      sampleSel.onchange = async () => { await saveCurrentChanges(); currentIndex = parseInt(sampleSel.value, 10); await loadSampleByIndex(currentIndex); };
+      actionSel.onchange = async () => {
+        await saveCurrentChanges();
+        await loadSampleByIndex(currentIndex);
+      };
+
+      $('prev-btn').onclick = async () => { if (currentIndex <= 0) return; await saveCurrentChanges(); currentIndex -= 1; sampleSel.value = String(currentIndex); await loadSampleByIndex(currentIndex); };
+      $('next-btn').onclick = async () => { if (currentIndex >= samples.length - 1) return; await saveCurrentChanges(); currentIndex += 1; sampleSel.value = String(currentIndex); await loadSampleByIndex(currentIndex); };
+      $('apply-bbox').onclick = () => {
+        try {
+          modifiedBboxNorm = JSON.parse($('modified-bbox').value);
+          if (originalW && originalH) {
+            $('modified-bbox-px').value = JSON.stringify(normToPixel(modifiedBboxNorm, originalW, originalH));
+          }
+          renderFullOverlay();
+        } catch (e) {}
+      };
+
+      $('fix-bbox').onclick = async () => {
+        if (!currentSample || !currentSample.image_base64) return;
+        if (typeof cv === 'undefined' || !cvReady) {
+          alert('OpenCV is not loaded yet. Please wait or refresh the page.');
+          return;
+        }
+        openCorrectionModal();
+      };
+
+      // ---- Modal logic ----
+      async function openCorrectionModal() {
+        const img = $('correction-image');
+        $('correction-modal').style.display = 'flex';
+        img.src = screenshotImg.src;
+
+        if (!originalW || !originalH) {
+          originalW = screenshotImg.naturalWidth || 0;
+          originalH = screenshotImg.naturalHeight || 0;
+        }
+
+        const bboxNorm = modifiedBboxNorm || originalBboxNorm;
+        const bbPix = normToPixel(bboxNorm, originalW, originalH);
+        tlPoint = { x: bbPix[0], y: bbPix[1] };
+        brPoint = { x: bbPix[2], y: bbPix[3] };
+
+        $('input-tl-x').value = tlPoint.x; $('input-tl-y').value = tlPoint.y;
+        $('input-br-x').value = brPoint.x; $('input-br-y').value = brPoint.y;
+
+        img.onload = () => {
+          requestAnimationFrame(() => {
+            const imgContainer = $('correction-image-container');
+            const overlaySvgEl = d3.select($('correction-overlay'));
+            const imgRect = img.getBoundingClientRect();
+            const containerRect = imgContainer.getBoundingClientRect();
+            const offsetLeft = imgRect.left - containerRect.left;
+            const offsetTop = imgRect.top - containerRect.top;
+            $('correction-overlay').style.left = `${offsetLeft}px`;
+            $('correction-overlay').style.top = `${offsetTop}px`;
+            overlaySvgEl.selectAll('*').remove();
+            overlaySvgEl.attr('width', imgRect.width).attr('height', imgRect.height);
+
+            const origPix = normToPixel(originalBboxNorm, originalW, originalH);
+            const scaleX = imgRect.width / originalW;
+            const scaleY = imgRect.height / originalH;
+
+            currentOrigRect = overlaySvgEl.append('rect')
+              .attr('fill', 'none')
+              .attr('stroke', 'rgba(148,163,184,0.9)')
+              .attr('stroke-width', 2)
+              .attr('stroke-dasharray', '4 4')
+              .attr('x', origPix[0]*scaleX)
+              .attr('y', origPix[1]*scaleY)
+              .attr('width', Math.max(0, (origPix[2]-origPix[0])*scaleX))
+              .attr('height', Math.max(0, (origPix[3]-origPix[1])*scaleY));
+
+            currentRect = overlaySvgEl.append('rect')
+              .attr('fill', 'rgba(255, 0, 0, 0.25)')
+              .attr('stroke', 'red')
+              .attr('stroke-width', 2);
+
+            updateRect(imgRect.width, imgRect.height);
+
+            const overlayDom = $('correction-overlay');
+            overlayDom.addEventListener('mousemove', handleMouseMove);
+            handleMouseLeaveForCorrection = () => {
+              $('zoom-canvas').getContext('2d').clearRect(0, 0, $('zoom-canvas').width, $('zoom-canvas').height);
+              $('cursor-coords-display').textContent = '';
+            };
+            overlayDom.addEventListener('mouseleave', handleMouseLeaveForCorrection);
+            overlayDom.addEventListener('mousedown', handleMouseDown);
+            overlayDom.addEventListener('mouseup', handleMouseUp);
+          });
+        };
+      }
+
+      function closeModal() {
+        $('correction-modal').style.display = 'none';
+        const overlayDom = $('correction-overlay');
+        overlayDom.removeEventListener('mousemove', handleMouseMove);
+        if (handleMouseLeaveForCorrection) overlayDom.removeEventListener('mouseleave', handleMouseLeaveForCorrection);
+        overlayDom.removeEventListener('mousedown', handleMouseDown);
+        overlayDom.removeEventListener('mouseup', handleMouseUp);
+        selectMode = null;
+      }
+
+      function startSelect(mode) {
+        selectMode = mode;
+        $('btn-select-tl').style.borderColor = (mode === 'tl') ? 'var(--accent)' : 'var(--border)';
+        $('btn-select-br').style.borderColor = (mode === 'br') ? 'var(--accent)' : 'var(--border)';
+      }
+
+      function updateFromInputs() {
+        tlPoint.x = parseInt($('input-tl-x').value) || 0;
+        tlPoint.y = parseInt($('input-tl-y').value) || 0;
+        brPoint.x = parseInt($('input-br-x').value) || 0;
+        brPoint.y = parseInt($('input-br-y').value) || 0;
+        const img = $('correction-image');
+        if (img.complete) updateRect(img.clientWidth, img.clientHeight);
+      }
+
+      function updateRect(displayedW, displayedH) {
+        const x1 = (tlPoint.x / originalW) * displayedW, y1 = (tlPoint.y / originalH) * displayedH;
+        const x2 = (brPoint.x / originalW) * displayedW, y2 = (brPoint.y / originalH) * displayedH;
+        const x = Math.min(x1, x2), y = Math.min(y1, y2);
+        const w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
+        currentRect.attr('x', x).attr('y', y).attr('width', w).attr('height', h);
+      }
+
+      function handleMouseDown(e) {
+        if (!selectMode) return;
+        const overlayRect = e.currentTarget.getBoundingClientRect();
+        startX = e.clientX - overlayRect.left;
+        startY = e.clientY - overlayRect.top;
+        isCtrlPressed = e.ctrlKey;
+        isLongPress = false;
+        pressTimer = setTimeout(() => {
+          isLongPress = true;
+          $('loading-indicator').style.display = 'block';
+          if (isCtrlPressed) snapToCorner(startX, startY, overlayRect.width, overlayRect.height);
+          else snapToLine(startX, startY, overlayRect.width, overlayRect.height);
+        }, 500);
+      }
+
+      function handleMouseUp(e) {
+        clearTimeout(pressTimer);
+        if (isLongPress) { isLongPress = false; return; }
+        if (selectMode) {
+          const overlayRect = e.currentTarget.getBoundingClientRect();
+          const endX = e.clientX - overlayRect.left;
+          const endY = e.clientY - overlayRect.top;
+          const dist = Math.hypot(endX - startX, endY - startY);
+          if (dist < 5) handleImageClick(e);
+        }
+      }
+
+      function handleImageClick(e) {
+        if (!selectMode) return;
+        const overlayRect = e.currentTarget.getBoundingClientRect();
+        const x_norm = (e.clientX - overlayRect.left) / overlayRect.width;
+        const y_norm = (e.clientY - overlayRect.top) / overlayRect.height;
+        const pixelX = Math.round(x_norm * originalW);
+        const pixelY = Math.round(y_norm * originalH);
+
+        if (selectMode === 'tl') {
+          tlPoint.x = pixelX; tlPoint.y = pixelY;
+          $('input-tl-x').value = pixelX; $('input-tl-y').value = pixelY;
+          startSelect('br');
+        } else if (selectMode === 'br') {
+          brPoint.x = pixelX; brPoint.y = pixelY;
+          $('input-br-x').value = pixelX; $('input-br-y').value = pixelY;
+          selectMode = null;
+          $('btn-select-br').style.borderColor = 'var(--border)';
+        }
+        updateRect(overlayRect.width, overlayRect.height);
+      }
+
+      function handleMouseMove(e) {
+        if (pressTimer) clearTimeout(pressTimer);
+        const img = $('correction-image');
+        if (!img.complete || !cvReady) return;
+
+        const overlayRect = e.currentTarget.getBoundingClientRect();
+        const x = e.clientX - overlayRect.left;
+        const y = e.clientY - overlayRect.top;
+
+        const pixelX = Math.round((x / overlayRect.width) * originalW);
+        const pixelY = Math.round((y / overlayRect.height) * originalH);
+        $('cursor-coords-display').textContent = `Cursor: (${pixelX}, ${pixelY})`;
+
+        const zoomCanvas = $('zoom-canvas');
+        const zoomFactor = 3;
+        const previewSize = 200;
+        const cropSize = previewSize / zoomFactor;
+
+        zoomCanvas.width = cropSize;
+        zoomCanvas.height = cropSize;
+
+        const sourceCropX = pixelX - (cropSize / 2);
+        const sourceCropY = pixelY - (cropSize / 2);
+
+        const tempCanvas = $('temp-canvas');
+        tempCanvas.width = cropSize;
+        tempCanvas.height = cropSize;
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx.drawImage(img, sourceCropX, sourceCropY, cropSize, cropSize, 0, 0, cropSize, cropSize);
+
+        try {
+          const imageData = tempCtx.getImageData(0, 0, cropSize, cropSize);
+          let src = cv.matFromImageData(imageData);
+          let dst = new cv.Mat();
+          let M = cv.matFromArray(3, 3, cv.CV_32FC1, [0, -1, 0, -1, 5, -1, 0, -1, 0]);
+          let anchor = new cv.Point(-1, -1);
+          cv.filter2D(src, dst, cv.CV_8U, M, anchor, 0, cv.BORDER_DEFAULT);
+          cv.imshow(zoomCanvas, dst);
+          src.delete(); dst.delete(); M.delete();
+        } catch(err) {
+          const zCtx = zoomCanvas.getContext('2d');
+          zCtx.drawImage(tempCanvas, 0, 0);
+        }
+      }
+
+      function snapToLine(x, y, displayedW, displayedH) {
+        const img = $('correction-image');
+        const canvas = $('temp-canvas');
+        canvas.width = img.clientWidth;
+        canvas.height = img.clientHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const windowSize = 200;
+        const half = windowSize / 2;
+        let left = Math.max(0, x - half);
+        let top = Math.max(0, y - half);
+        if (left + windowSize > displayedW) left = displayedW - windowSize;
+        if (top + windowSize > displayedH) top = displayedH - windowSize;
+
+        const imageData = ctx.getImageData(left, top, windowSize, windowSize);
+        let src = cv.matFromImageData(imageData);
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+        let edges = new cv.Mat();
+        cv.Canny(gray, edges, 50, 150, 3, false);
+        let lines = new cv.Mat();
+        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 20, 30, 10);
+
+        const localX = x - left;
+        const localY = y - top;
+        let closestDist = Infinity;
+        let snappedLocalX = localX;
+        let snappedLocalY = localY;
+
+        for (let i = 0; i < lines.rows; ++i) {
+          const x1 = lines.data32S[i * 4];
+          const y1 = lines.data32S[i * 4 + 1];
+          const x2 = lines.data32S[i * 4 + 2];
+          const y2 = lines.data32S[i * 4 + 3];
+          const pt = closestPointOnLineSegment(localX, localY, x1, y1, x2, y2);
+          const dist = distance(localX, localY, pt.x, pt.y);
+          if (dist < closestDist) {
+            closestDist = dist;
+            snappedLocalX = pt.x;
+            snappedLocalY = pt.y;
+          }
+        }
+
+        let snappedX = x;
+        let snappedY = y;
+        if (closestDist < 10 && lines.rows > 0) {
+          snappedX = left + snappedLocalX;
+          snappedY = top + snappedLocalY;
+        }
+
+        src.delete(); gray.delete(); edges.delete(); lines.delete();
+        $('loading-indicator').style.display = 'none';
+
+        const x_norm = snappedX / displayedW;
+        const y_norm = snappedY / displayedH;
+        const pixelX = Math.round(x_norm * originalW);
+        const pixelY = Math.round(y_norm * originalH);
+
+        if (selectMode === 'tl') {
+          tlPoint.x = pixelX; tlPoint.y = pixelY;
+          $('input-tl-x').value = pixelX; $('input-tl-y').value = pixelY;
+          startSelect('br');
+        } else if (selectMode === 'br') {
+          brPoint.x = pixelX; brPoint.y = pixelY;
+          $('input-br-x').value = pixelX; $('input-br-y').value = pixelY;
+          selectMode = null;
+          $('btn-select-br').style.borderColor = 'var(--border)';
+        }
+        updateRect(displayedW, displayedH);
+      }
+
+      function snapToCorner(x, y, displayedW, displayedH) {
+        const img = $('correction-image');
+        const canvas = $('temp-canvas');
+        canvas.width = img.clientWidth;
+        canvas.height = img.clientHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const windowSize = 200;
+        const half = windowSize / 2;
+        let left = Math.max(0, x - half);
+        let top = Math.max(0, y - half);
+        if (left + windowSize > displayedW) left = displayedW - windowSize;
+        if (top + windowSize > displayedH) top = displayedH - windowSize;
+
+        const imageData = ctx.getImageData(left, top, windowSize, windowSize);
+        let src = cv.matFromImageData(imageData);
+        let gray = new cv.Mat();
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+        let blurred = new cv.Mat();
+        let ksize = new cv.Size(5, 5);
+        cv.GaussianBlur(gray, blurred, ksize, 0, 0, cv.BORDER_DEFAULT);
+
+        let corners = new cv.Mat();
+        cv.goodFeaturesToTrack(blurred, corners, 20, 0.01, 5, new cv.Mat(), 3, true, 0.04);
+
+        const localX = x - left;
+        const localY = y - top;
+        let closestDist = Infinity;
+        let snappedLocalX = localX;
+        let snappedLocalY = localY;
+
+        for (let i = 0; i < corners.rows; ++i) {
+          let cx = corners.data32F[i * 2];
+          let cy = corners.data32F[i * 2 + 1];
+          const dist = distance(localX, localY, cx, cy);
+          if (dist < closestDist) {
+            closestDist = dist;
+            snappedLocalX = cx;
+            snappedLocalY = cy;
+          }
+        }
+
+        let snappedX = x;
+        let snappedY = y;
+        if (closestDist < 10 && corners.rows > 0) {
+          snappedX = left + snappedLocalX;
+          snappedY = top + snappedLocalY;
+        }
+
+        src.delete(); gray.delete(); blurred.delete(); corners.delete();
+        $('loading-indicator').style.display = 'none';
+
+        const x_norm = snappedX / displayedW;
+        const y_norm = snappedY / displayedH;
+        const pixelX = Math.round(x_norm * originalW);
+        const pixelY = Math.round(y_norm * originalH);
+
+        if (selectMode === 'tl') {
+          tlPoint.x = pixelX; tlPoint.y = pixelY;
+          $('input-tl-x').value = pixelX; $('input-tl-y').value = pixelY;
+          startSelect('br');
+        } else if (selectMode === 'br') {
+          brPoint.x = pixelX; brPoint.y = pixelY;
+          $('input-br-x').value = pixelX; $('input-br-y').value = pixelY;
+          selectMode = null;
+          $('btn-select-br').style.borderColor = 'var(--border)';
+        }
+        updateRect(displayedW, displayedH);
+      }
+
+      function closestPointOnLineSegment(px, py, x1, y1, x2, y2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        if (dx === 0 && dy === 0) return {x: x1, y: y1};
+        const t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
+        const clampedT = Math.max(0, Math.min(1, t));
+        return {x: x1 + clampedT * dx, y: y1 + clampedT * dy};
+      }
+
+      function distance(x1, y1, x2, y2) {
+        return Math.hypot(x2 - x1, y2 - y1);
+      }
+
+      async function confirmCorrection() {
+        const final_tl_x = Math.min(parseInt($('input-tl-x').value), parseInt($('input-br-x').value));
+        const final_tl_y = Math.min(parseInt($('input-tl-y').value), parseInt($('input-br-y').value));
+        const final_br_x = Math.max(parseInt($('input-tl-x').value), parseInt($('input-br-x').value));
+        const final_br_y = Math.max(parseInt($('input-tl-y').value), parseInt($('input-br-y').value));
+
+        const new_bbox_pixel = [final_tl_x, final_tl_y, final_br_x, final_br_y];
+        const new_bbox_norm = pixelToNorm(new_bbox_pixel, originalW, originalH);
+        modifiedBboxNorm = new_bbox_norm;
+        $('modified-bbox').value = JSON.stringify(modifiedBboxNorm);
+        $('modified-bbox-px').value = JSON.stringify(new_bbox_pixel);
+        renderFullOverlay();
+        closeModal();
+      }
+
+      (async () => {
+        await loadDatasets();
+      })();
+    </script>
+  </body>
+</html>
