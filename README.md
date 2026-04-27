@@ -96,7 +96,7 @@ Feed any GUI screenshot dataset into the hierarchical annotator. It decomposes e
 python utils/data_utils/autoguiv2/annotate_functional_regions.py \
     --data-path "HongxinLi/ScreenSpot-Pro" \
     --model "gpt-4o" \
-    --checking-model "gpt-4o-mini" \
+    --checking-model "gemini-2.5-pro-thinking" \
     --output-dir "./annotations" \
     --workers 4 \
     --max-level 3
@@ -108,8 +108,8 @@ python utils/data_utils/autoguiv2/annotate_functional_regions.py \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `gpt-4o` | Primary LLM for annotation |
-| `--checking-model` | `gpt-4o-mini` | Quality verification model |
+| `--model` | `gemini-2.5-pro-thinking` | Primary LLM for annotation |
+| `--checking-model` | `gemini-2.5-pro-thinking` | Quality verification model |
 | `--max-level` | `-1` (unlimited) | Max hierarchy depth |
 | `--workers` | `1` | Parallel workers |
 | `--completeness-threshold` | `2.5` | 0–3 scale; higher = stricter |
@@ -227,8 +227,8 @@ GUI Screenshots (any dataset)
 │                                     │
 │   LLM decomposes image → region     │
 │   tree. Dual-model quality check:   │
-│   • Completeness  (gpt-4o-mini)     │
-│   • Boundedness   (gpt-4o-mini)     │
+│   • Completeness  (gemini)          │
+│   • Boundedness   (gemini)          │
 │   Caching + parallel processing     │
 └─────────────────────────────────────┘
          │
