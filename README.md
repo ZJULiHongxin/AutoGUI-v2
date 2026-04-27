@@ -16,7 +16,7 @@
 
 [Overview](#-overview) · [Tasks](#-benchmark-tasks) · [Installation](#-installation) · [Quick Start](#-quick-start) · [Pipeline](#-pipeline-architecture) · [Citation](#-citation)
 
-<img src="project_page/static/images/examples/ex_agentnet.png" width="75%" alt="AutoGUI-v2 Example">
+<img src="assets/fig_teaser.png" width="95%" alt="AutoGUI-v2 Example">
 
 </div>
 
@@ -216,6 +216,11 @@ The web UI lets you inspect annotation progress in real time, correct bounding b
 ---
 
 ## Pipeline Architecture
+
+<div align="center">
+
+<img src="assets/fig_autoguiv2_pipeline.png" width="95%" alt="AutoGUI-v2 Example">
+</div>
 
 ```
 GUI Screenshots (any dataset)
