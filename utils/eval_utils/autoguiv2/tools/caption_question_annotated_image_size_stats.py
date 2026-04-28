@@ -3,18 +3,12 @@
 Aggregate `annotated_image_size` values from captioning_mode question result files.
 """
 
+import argparse
 import glob
 import json
 import os
 from collections import Counter
 from typing import Iterable, List, Tuple
-
-CAPTIONING_RESULT_DIRS: List[str] = [
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/osworld_g/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/screenspot_pro/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/agentnet/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/amex/FuncRegion/captioning_mode",
-]
 
 RESULT_PATTERN = "**/*_result.json"
 
@@ -63,10 +57,10 @@ def normalize_image_size(value) -> str:
     return json.dumps(value, sort_keys=True)
 
 
-def compute_image_size_counts() -> Tuple[Counter, int]:
+def compute_image_size_counts(directories: Iterable[str]) -> Tuple[Counter, int]:
     counter: Counter = Counter()
 
-    for path in iter_result_files(CAPTIONING_RESULT_DIRS):
+    for path in iter_result_files(directories):
         for question in load_questions(path):
             if "annotated_image_size" in question:
                 counter[normalize_image_size(question["annotated_image_size"])] += 1
@@ -75,7 +69,15 @@ def compute_image_size_counts() -> Tuple[Counter, int]:
 
 
 def main() -> None:
-    counter, total = compute_image_size_counts()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "directories",
+        nargs="+",
+        help="Captioning-mode result directories to scan recursively (e.g. ./tasks/region/captioning_mode).",
+    )
+    args = parser.parse_args()
+
+    counter, total = compute_image_size_counts(args.directories)
     print("Total questions with annotated_image_size:", total)
     print("\nAll annotated_image_size counts:")
     for value, count in counter.most_common():

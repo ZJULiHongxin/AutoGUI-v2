@@ -1,38 +1,41 @@
 """
-Convert FuncRegionCap captioning mode questions to Hugging Face dataset format and upload
+Convert FuncRegionGnd grounding mode questions to Hugging Face dataset format and upload
 
-This script reads the output from captioning_mode directory and converts
-it to a Hugging Face dataset, including images, region IDs, questions,
+This script reads the output from grounding_mode directory and converts
+it to a Hugging Face dataset, including images, bounding boxes, questions,
 options, and metadata.
 
 Dataset Fields Explanation:
-- annotated_image: PIL Image object (or path if --include-images is False), loaded from annotated_image_path
-- annotated_image_name: Annotated image filename (extracted from annotated_image_path)
+- image: PIL Image object (or path if --include-images is False)
+- image_name: Image filename
 - dataset_name: Name of the dataset (default: osworld_g)
-- image_size: [width, height] of the original image
+- image_size: [width, height] of the image
 - question: The question text
 - correct_answer: Correct answer label (e.g., "A", "B", "C", "D")
 - correct_option_idx: Index of correct answer in option arrays (e.g., 0, 1, 2, 3)
-- target_region_id: Region ID of the correct option
+- correct_bbox: Bounding box of the correct option [x_min, y_min, x_max, y_max]
 - explanation: Explanation for the correct answer
 - num_options: Number of options in the question
 - option_labels: List of option labels ["A", "B", "C", "D"]
 - option_region_ids: List of region IDs for each option
+- option_bboxes: List of bounding boxes for each option
 - option_region_types: List of region types (e.g., "button", "icon", "text")
 - option_area_classes: List of area classifications (e.g., "small", "medium", "large")
-- option_density_classes: List of density classifications (e.g., "low", "high")
-- option_contexts: List of contextual descriptions for each option
-- option_descriptions: List of textual descriptions for each option
-- option_functionalities: List of functionality summaries for each option
+ - option_density_classes: List of density classifications (e.g., "low", "high")
+ - option_descriptions: List of textual descriptions for each option
+ - option_functionalities: List of functionality summaries for each option
 - group_id: Group ID for the question
 - group_description: Description of the group
-- generation_mode: Mode of generation (e.g., "captioning_mode")
+- generation_mode: Mode of generation (e.g., "grounding")
 """
 
 import os
+import re
 import glob
 import json
+import random
 import argparse
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from collections import defaultdict
 from tqdm import tqdm
@@ -40,6 +43,7 @@ from PIL import Image
 
 try:
     from datasets import Dataset, DatasetDict, Features, Value, Image as HFImage, Sequence
+    from huggingface_hub import HfApi
 except ImportError:
     print("Please install required packages: pip install datasets huggingface_hub")
     exit(1)
@@ -70,8 +74,8 @@ def debug_print(message: str, level: str = "info") -> None:
     print(f"{color}{message}{Style.RESET_ALL}")
 
 
-def load_captioning_data(data_dir: str) -> List[Dict[str, Any]]:
-    """Load all captioning mode result files
+def load_grounding_data(data_dir: str) -> List[Dict[str, Any]]:
+    """Load all grounding mode result files
     
     Args:
         data_dir: Directory containing *_result.json files
@@ -79,7 +83,7 @@ def load_captioning_data(data_dir: str) -> List[Dict[str, Any]]:
     Returns:
         List of all questions from all files
     """
-    debug_print("\n📂 Loading captioning mode data files...", level="step")
+    debug_print("\n📂 Loading grounding mode data files...", level="step")
     
     # Find all result files
     result_files = glob.glob(os.path.join(data_dir, "*_result.json"))
@@ -107,20 +111,11 @@ def load_captioning_data(data_dir: str) -> List[Dict[str, Any]]:
                     if q['image_path']:
                         q['image_name'] = os.path.basename(q['image_path'])
                     else:
-                        # Try to get from image_key if available
-                        image_key = data.get('image_key', '')
-                        if image_key:
-                            q['image_name'] = os.path.basename(image_key)
-                        else:
-                            q['image_name'] = os.path.basename(result_file).replace('_result.json', '.png')
+                        q['image_name'] = os.path.basename(result_file).replace('_result.json', '.png')
                 
-                # Add image_size if available (from annotated_image_size or result)
+                # Add image_size if available
                 if 'image_size' not in q:
-                    # Try annotated_image_size first (it's [H, W])
-                    if 'annotated_image_size' in q and q['annotated_image_size']:
-                        q['image_size'] = q['annotated_image_size']
-                    else:
-                        q['image_size'] = result.get('image_size', [0, 0])
+                    q['image_size'] = result.get('image_size', {'width': 0, 'height': 0})
                 
                 # generation_timestamp is intentionally not recorded in HF dataset
                 q['generation_timestamp'] = data.get('metadata', {}).get('timestamp', '')
@@ -188,16 +183,17 @@ def convert_to_dataset_format(questions: List[Dict[str, Any]], base_image_dir: O
             # Process options into separate lists
             option_labels = []
             option_region_ids = []
+            option_bboxes = []
             option_region_types = []
             option_area_classes = []
             option_density_classes = []
-            option_contexts = []
             option_descriptions = []
             option_functionalities = []
             
             for opt in options:
                 option_labels.append(opt.get('label', ''))
                 option_region_ids.append(opt.get('region_id', ''))
+                option_bboxes.append(opt.get('bbox', []))
                 option_region_types.append(opt.get('region_type', ''))
                 
                 # Extract metrics
@@ -207,7 +203,6 @@ def convert_to_dataset_format(questions: List[Dict[str, Any]], base_image_dir: O
                 
                 option_area_classes.append(area_info.get('area_class', ''))
                 option_density_classes.append(density_info.get('density_class', ''))
-                option_contexts.append(opt.get('option_context', ''))
                 option_descriptions.append(opt.get('description', ''))
                 option_functionalities.append(opt.get('functionality', ''))
             
@@ -222,14 +217,11 @@ def convert_to_dataset_format(questions: List[Dict[str, Any]], base_image_dir: O
                 skipped_count += 1
                 continue
             
-            # Get target region ID (instead of bbox)
-            target_region_id = q.get('target_region_id', '')
-            if not target_region_id:
-                # Fallback to correct option's region_id
-                target_region_id = option_region_ids[correct_option_idx] if correct_option_idx >= 0 else ''
+            # Get correct option bbox
+            correct_bbox = option_bboxes[correct_option_idx]
             
             # Extract image size (accept dict or [H, W] list/tuple)
-            image_size = q.get('image_size', [])
+            image_size = q.get('image_size', {})
             img_width = 0
             img_height = 0
             if isinstance(image_size, dict):
@@ -240,37 +232,30 @@ def convert_to_dataset_format(questions: List[Dict[str, Any]], base_image_dir: O
                 img_height = int(image_size[0] or 0)
                 img_width = int(image_size[1] or 0)
             
-            # Get annotated image info (optional)
-            annotated_image_path = q.get('annotated_image_path', '')
-            # Extract annotated_image_name from path (last part after /)
-            annotated_image_name = ''
-            if annotated_image_path:
-                annotated_image_name = os.path.basename(annotated_image_path)
-            
             # Create dataset entry
             entry = {
-                'annotated_image_path': annotated_image_path,  # Keep temporarily for loading image
-                'annotated_image_name': annotated_image_name,
+                'image_path': image_path,
+                'image_name': q.get('image_name', ''),
                 # Prefer dataset_name in question if provided; otherwise fallback to arg
                 'dataset_name': q.get('dataset_name', dataset_name),
-                'image_size': [img_width, img_height],  # [width, height]
+                'image_size': [img_width, img_height],  # 修改：合并为一个字段
                 'question': question_text,
                 'correct_answer': correct_answer,
                 'correct_option_idx': correct_option_idx,
-                'target_region_id': target_region_id,
+                'correct_bbox': correct_bbox,
                 'explanation': explanation,
                 'num_options': len(options),
                 'option_labels': option_labels,
                 'option_region_ids': option_region_ids,
+                'option_bboxes': option_bboxes,
                 'option_region_types': option_region_types,
                 'option_area_classes': option_area_classes,
                 'option_density_classes': option_density_classes,
-                'option_contexts': option_contexts,
                 'option_descriptions': option_descriptions,
                 'option_functionalities': option_functionalities,
                 'group_id': q.get('group_id', -1),
                 'group_description': q.get('group_description', ''),
-                'generation_mode': q.get('generation_mode', 'captioning_mode'),
+                'generation_mode': q.get('generation_mode', 'grounding'),
             }
             
             dataset_entries.append(entry)
@@ -298,22 +283,22 @@ def create_hf_dataset(entries: List[Dict[str, Any]], include_images: bool = True
     
     # Define features schema
     features = Features({
-        'annotated_image': HFImage() if include_images else Value('string'),
-        'annotated_image_name': Value('string'),
+        'image': HFImage() if include_images else Value('string'),
+        'image_name': Value('string'),
         'dataset_name': Value('string'),
         'image_size': Sequence(Value('int32')),  # [width, height]
         'question': Value('string'),
         'correct_answer': Value('string'),
         'correct_option_idx': Value('int32'),
-        'target_region_id': Value('string'),
+        'correct_bbox': Sequence(Value('int32')),  # [x_min, y_min, x_max, y_max]
         'explanation': Value('string'),
         'num_options': Value('int32'),
         'option_labels': Sequence(Value('string')),
         'option_region_ids': Sequence(Value('string')),
+        'option_bboxes': Sequence(Sequence(Value('int32'))),  # List of [x_min, y_min, x_max, y_max]
         'option_region_types': Sequence(Value('string')),
         'option_area_classes': Sequence(Value('string')),
         'option_density_classes': Sequence(Value('string')),
-        'option_contexts': Sequence(Value('string')),
         'option_descriptions': Sequence(Value('string')),
         'option_functionalities': Sequence(Value('string')),
         'group_id': Value('int32'),
@@ -329,41 +314,38 @@ def create_hf_dataset(entries: List[Dict[str, Any]], include_images: bool = True
             # Validate required fields
             if entry['correct_option_idx'] < 0 or entry['num_options'] == 0:
                 continue
-            if not entry['target_region_id']:
+            if not entry['correct_bbox'] or len(entry['correct_bbox']) != 4:
                 continue
             
-            annotated_image_path = entry['annotated_image_path']
+            image_path = entry['image_path']
             
-            # Load annotated image if requested
+            # Load image if requested
             if include_images:
-                if not annotated_image_path:
-                    debug_print("⚠️  Missing annotated_image_path, skipping entry", level="warn")
-                    continue
                 try:
-                    img = Image.open(annotated_image_path).convert('RGB')
-                    dataset_dict['annotated_image'].append(img)
+                    img = Image.open(image_path).convert('RGB')
+                    dataset_dict['image'].append(img)
                 except Exception as e:
-                    debug_print(f"⚠️  Failed to load annotated image {annotated_image_path}: {e}", level="warn")
+                    debug_print(f"⚠️  Failed to load image {image_path}: {e}", level="warn")
                     continue
             else:
-                dataset_dict['annotated_image'].append(annotated_image_path)
+                dataset_dict['image'].append(image_path)
             
             # Add all other fields
-            dataset_dict['annotated_image_name'].append(entry['annotated_image_name'])
+            dataset_dict['image_name'].append(entry['image_name'])
             dataset_dict['dataset_name'].append(entry['dataset_name'])
             dataset_dict['image_size'].append(entry['image_size'])
             dataset_dict['question'].append(entry['question'])
             dataset_dict['correct_answer'].append(entry['correct_answer'])
             dataset_dict['correct_option_idx'].append(entry['correct_option_idx'])
-            dataset_dict['target_region_id'].append(entry['target_region_id'])
+            dataset_dict['correct_bbox'].append(entry['correct_bbox'])
             dataset_dict['explanation'].append(entry['explanation'])
             dataset_dict['num_options'].append(entry['num_options'])
             dataset_dict['option_labels'].append(entry['option_labels'])
             dataset_dict['option_region_ids'].append(entry['option_region_ids'])
+            dataset_dict['option_bboxes'].append(entry['option_bboxes'])
             dataset_dict['option_region_types'].append(entry['option_region_types'])
             dataset_dict['option_area_classes'].append(entry['option_area_classes'])
             dataset_dict['option_density_classes'].append(entry['option_density_classes'])
-            dataset_dict['option_contexts'].append(entry['option_contexts'])
             dataset_dict['option_descriptions'].append(entry['option_descriptions'])
             dataset_dict['option_functionalities'].append(entry['option_functionalities'])
             dataset_dict['group_id'].append(entry['group_id'])
@@ -432,7 +414,7 @@ def main(args):
     """Main conversion and upload function"""
     
     debug_print("═" * 60, level="title")
-    debug_print("🔄 Convert FuncRegionCap Captioning to HF Dataset", level="title")
+    debug_print("🔄 Convert FuncRegionGnd Grounding to HF Dataset", level="title")
     debug_print("═" * 60, level="title")
     
     debug_print("\n📁 INPUT CONFIGURATION", level="step")
@@ -457,13 +439,13 @@ def main(args):
     
     debug_print("\n" + "═" * 60, level="title")
     
-    # Load captioning data
+    # Load grounding data
     questions = []
     if getattr(args, "data_dirs", None):
         for data_dir in args.data_dirs:
-            questions.extend(load_captioning_data(data_dir))
+            questions.extend(load_grounding_data(data_dir))
     else:
-        questions = load_captioning_data(args.data_dir)
+        questions = load_grounding_data(args.data_dir)
     
     if not questions:
         debug_print("❌ No valid questions found", level="error")
@@ -513,17 +495,14 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Convert FuncRegionCap captioning mode questions to Hugging Face dataset format and optionally upload"
+        description="Convert FuncRegionGnd grounding mode questions to Hugging Face dataset format and optionally upload"
     )
     
     # Input arguments
-    parser.add_argument("--data-dir", 
-                       default="/mnt/vdb1/hongxin_li/AutoGUIv2/osworld_g/FuncRegion/captioning_mode",
+    parser.add_argument("--data-dir", default=None,
                        help="Directory containing *_result.json files")
     parser.add_argument("--data-dirs", nargs="+", type=str, default=None,
-                       help="Multiple directories to merge; each containing *_result.json files. "
-                            "If not provided, will use default 4 directories: "
-                            "osworld_g, screenspot_pro, agentnet, amex")
+                       help="Multiple directories to merge; each containing *_result.json files")
     parser.add_argument("--base-image-dir", type=str, default=None,
                        help="Base directory to resolve relative image paths (optional)")
     parser.add_argument("--dataset-name", type=str, default="osworld_g",
@@ -531,11 +510,11 @@ if __name__ == "__main__":
     
     # Output arguments
     parser.add_argument("--output-dir", type=str,
-                       default="/mnt/vdb1/hongxin_li/AutoGUIv2/hf_dataset_cache/FuncRegionCap",
+                       default="hf_dataset_cache/FuncRegionGnd-v2",
                        help="Local directory to save the dataset")
     parser.add_argument("--upload", action="store_true",
                        help="Upload dataset to Hugging Face Hub (default: False, only save locally)")
-    parser.add_argument("--repo-id", type=str, default="HongxinLi/AutoGUIv2-FuncRegionCap",
+    parser.add_argument("--repo-id", type=str, default="HongxinLi/AutoGUIv2-FuncRegionGnd-v2",
                        help="HuggingFace repository ID (e.g., 'username/dataset-name')")
     parser.add_argument("--hf-token", type=str, default=os.environ.get("LHX_HF_KEY"),
                        help="Hugging Face token (uses LHX_HF_KEY env var if not provided)")
@@ -547,15 +526,8 @@ if __name__ == "__main__":
                        help="Include actual image data in dataset (default: True; set to False by overriding in code or changing flag logic)")
     
     args = parser.parse_args()
-    
-    # If data_dirs not provided, use default 4 directories
+
     if not args.data_dirs and not args.data_dir:
-        args.data_dirs = [
-            "/mnt/vdb1/hongxin_li/AutoGUIv2/osworld_g/FuncRegion/captioning_mode",
-            "/mnt/vdb1/hongxin_li/AutoGUIv2/screenspot_pro/FuncRegion/captioning_mode",
-            "/mnt/vdb1/hongxin_li/AutoGUIv2/agentnet/FuncRegion/captioning_mode",
-            "/mnt/vdb1/hongxin_li/AutoGUIv2/amex/FuncRegion/captioning_mode",
-        ]
+        parser.error("Provide --data-dir or --data-dirs")
     
     main(args)
-

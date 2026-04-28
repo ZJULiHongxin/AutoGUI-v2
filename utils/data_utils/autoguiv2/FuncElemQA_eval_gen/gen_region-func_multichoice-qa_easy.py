@@ -9,7 +9,7 @@ Simplified version with 2 generation modes:
 
 Pipeline:
 1. Aliyun text-embedding-v4: Initial grouping based on semantic text similarity
-2. Gemini Vision: Verify visual similarity, filter out invalid groups, refine elements
+2. Gemini Vision: Verify visual similarity, filter out invalid groups, refine regions
 3. Question Generation: Generate QA based on verified groups
 
 This two-stage approach ensures groups are both semantically AND visually similar.
@@ -48,7 +48,7 @@ except Exception:
 
 # Import utilities
 import sys
-sys.path.append('/'.join(__file__.split('/')[:-4]))
+sys.path.append('/'.join(__file__.split('/')[:-5]))
 from utils.openai_utils.openai import OpenAIModel
 
 # Import OpenAI for embedding generation (Aliyun DashScope)
@@ -76,38 +76,38 @@ per_image_output_dir = None
 # Prompt templates
 
 # Gemini Visual Verification Prompt (validates and refines groups from Aliyun embedding)
-VISUAL_VERIFICATION_PROMPT = """You are a GUI understanding expert. Your task is to verify and refine groups of visually similar UI elements.
+VISUAL_VERIFICATION_PROMPT = """You are a GUI understanding expert. Your task is to verify and refine groups of visually similar UI regions.
 
 **Background:**
-We have identified a potential group of UI elements based on visual description similarity (using text embeddings of their visual appearance descriptions). However, text-based visual descriptions may not perfectly capture true visual similarity. Your role is to:
-1. Verify if the initially grouped elements are truly visually similar
-2. Check if any other candidate elements should be added to this group
-3. Ensure the final group size is between 2-5 elements
+We have identified a potential group of UI regions based on visual description similarity (using text embeddings of their visual appearance descriptions). However, text-based visual descriptions may not perfectly capture true visual similarity. Your role is to:
+1. Verify if the initially grouped regions are truly visually similar
+2. Check if any other candidate regions should be added to this group
+3. Ensure the final group size is between 2-5 regions
 
-**Criteria for Valid Group Elements:**
-- Elements should be **visually similar** (similar icon type, similar appearance, similar color/shape)
-- Elements should have **different functionalities** in their respective contexts
-- Elements should be **confusing for AI agents** because they look alike but behave differently
-- **CRITICAL**: Elements must NOT have overlapping bounding boxes (no parent-child or containment relationships)
-  * Check that no element's bbox is contained within another element's bbox
+**Criteria for Valid Group Regions:**
+- Regions should be **visually similar** (similar icon type, similar appearance, similar color/shape)
+- Regions should have **different functionalities** in their respective contexts
+- Regions should be **confusing for AI agents** because they look alike but behave differently
+- **CRITICAL**: Regions must NOT have overlapping bounding boxes (no parent-child or containment relationships)
+  * Check that no region's bbox is contained within another region's bbox
   * If bbox A is inside bbox B, they cannot be in the same group
 
-**Initially Identified Group (based on visual description embeddings from Aliyun text-embedding-v4):**
+**Initially Identified Group (based on visual description embeddings from Qwen3-Embedding):**
 {initial_group_info}
 
-**Other Candidate Elements (not in the initial group):**
+**Other Candidate Regions (not in the initial group):**
 {other_candidates_info}
 
 **Your Task (Two-Stage Process):**
 
 **Stage 1: Validate Initial Group Members**
-- Examine each element in the initial group
+- Examine each region in the initial group
 - Check if it truly meets all criteria (visually similar + different functionality + confusing + NO bbox overlap)
-- Check for bbox overlaps: If any two elements have overlapping bboxes, keep only ONE of them
-- Mark elements that don't fit as keep=false
+- Check for bbox overlaps: If any two regions have overlapping bboxes, keep only ONE of them
+- Mark regions that don't fit as keep=false
 
 **Stage 2: Supplement from Other Candidates**
-- Examine all other candidate elements
+- Examine all other candidate regions
 - Check if any of them are visually similar to the group and should be added
 - **BEFORE adding**: Verify the candidate's bbox does NOT overlap with ANY existing group member's bbox
 - Only add candidates that pass ALL criteria requirement
@@ -115,35 +115,27 @@ We have identified a potential group of UI elements based on visual description 
 **Stage 3: Size Control**
 - After Stages 1 & 2, count the final group size
 - If size < 2: Mark the entire group as INVALID
-- If size = 2-5: Keep all elements, mark as VALID
-- If size > 5: Select the 5 most visually similar and confusing elements (ensuring no bbox overlaps), mark others as keep=false
+- If size = 2-5: Keep all regions, mark as VALID
+- If size > 5: Select the 5 most visually similar and confusing regions (ensuring no bbox overlaps), mark others as keep=false
 
 **IMPORTANT: Judging Logic**
-- Judge the group as VALID if **at least 2 elements** (after refinement) meet ALL criteria
-- It's acceptable if some initial elements don't meet the criteria - just set their "keep" to false
+- Judge the group as VALID if **at least 2 regions** (after refinement) meet ALL criteria
+- It's acceptable if some initial regions don't meet the criteria - just set their "keep" to false
 - You MUST check all other candidates to see if they should be added
-- Example: If initial group has 3 elements but only 1 fits, check other candidates. If you find 1+ qualifying candidates, add them and mark as VALID
-- Only mark as INVALID if fewer than 2 elements can meet all criteria after checking ALL candidates
+- Example: If initial group has 3 regions but only 1 fits, check other candidates. If you find 1+ qualifying candidates, add them and mark as VALID
+- Only mark as INVALID if fewer than 2 regions can meet all criteria after checking ALL candidates
 
 **Output Format (JSON):**
-<think>
-[Your reasoning about:
-1. Stage 1: Which initial group members should be kept/removed and why
-2. Stage 2: Which other candidates should be added and why
-3. Stage 3: Final group size and any size-based adjustments
-4. Final decision: VALID or INVALID]
-</think>
-
 {{
   "valid": true/false,
   "rejection_reason": "Explanation if invalid" (only if valid=false),
-  "visual_similarity_description": "What makes these elements look similar" (only if valid=true),
+  "visual_similarity_description": "What makes these regions look similar" (only if valid=true),
   "kept_region_ids": [
     {{
       "region_id": "1-0",
       "keep": true,  // false to remove from group
       "source": "initial_group",  // or "added_from_candidates"
-      "reason": "Brief reason for keeping or removing this element"
+      "reason": "Brief reason for keeping or removing this region"
     }},
     {{
       "region_id": "1-2",
@@ -165,74 +157,66 @@ We have identified a potential group of UI elements based on visual description 
     }}
   ],
   "final_group_size": 3,
-  "adjustments_made": "Removed 1 element from initial group (not visually similar), added 1 element from candidates"
+  "adjustments_made": "Removed 1 region from initial group (not visually similar), added 1 region from candidates"
 }}
 
 **Requirements:**
 - Be strict: only approve groups that truly meet all criteria
-- Visual similarity is critical - don't approve groups where elements just happen to have similar text
+- Visual similarity is critical - don't approve groups where regions just happen to have similar text
 - Functionality differences must be clear and meaningful
-- **NO bbox overlaps allowed**: Reject or remove any element whose bbox overlaps with another group member
+- **NO bbox overlaps allowed**: Reject or remove any region whose bbox overlaps with another group member
 - You MUST examine all other candidates, not just the initial group
-- Final group size must be 2-5 elements (if >5, select the best 5 with no overlaps)
+- Final group size must be 2-5 regions (if >5, select the best 5 with no overlaps)
 - **IMPORTANT**: Do NOT modify bbox coordinates or functionality descriptions - they are already manually corrected and accurate
 
 Now analyze the screenshot and evaluate this group:"""
 
 # Gemini Element Selection Prompt (for oversized groups that need refinement)
-ELEMENT_SELECTION_PROMPT = """You are a GUI understanding expert. Your task is to select the BEST 2-5 elements from a large group of visually similar UI elements.
+ELEMENT_SELECTION_PROMPT = """You are a GUI understanding expert. Your task is to select the BEST 2-5 regions from a large group of visually similar UI regions.
 
 **Background:**
-We have identified a group of UI elements that are visually similar and functionally different. However, the group might have MORE than 5 elements, which is too many for a multiple-choice question. Your role is to:
-1. Select the 2-5 MOST representative and confusing elements
-2. Ensure selected elements have NO bbox overlaps
+We have identified a group of UI regions that are visually similar and functionally different. However, the group might have MORE than 5 regions, which is too many for a multiple-choice question. Your role is to:
+1. Select the 2-5 MOST representative and confusing regions
+2. Ensure selected regions have NO bbox overlaps
 3. Maximize visual similarity while maintaining functional diversity
 
 **Group Information:**
 {group_info}
 
 **Selection Criteria (in order of priority):**
-1. **Visual Similarity**: Select elements that look MOST similar to each other
-2. **Functional Diversity**: Ensure selected elements have clearly DIFFERENT functionalities
-3. **Confusion Potential**: Prioritize elements that would be MOST confusing for AI agents
-4. **NO Bbox Overlaps**: Selected elements must NOT have overlapping bounding boxes
-5. **Optimal Size**: Select 2-5 elements (prefer 3-4 if possible for better question quality)
+1. **Visual Similarity**: Select regions that look MOST similar to each other
+2. **Functional Diversity**: Ensure selected regions have clearly DIFFERENT functionalities
+3. **Confusion Potential**: Prioritize regions that would be MOST confusing for AI agents
+4. **NO Bbox Overlaps**: Selected regions must NOT have overlapping bounding boxes
+5. **Optimal Size**: Select 2-5 regions (prefer 3-4 if possible for better question quality)
 
 **Your Task:**
-1. Analyze all elements in the group
+1. Analyze all regions in the group (ONLY the regions listed in "Group Information" above)
 2. Identify the core "visual pattern" (e.g., all are blue icons, all are text buttons)
-3. Select 2-5 elements that BEST represent this pattern
-4. Ensure NO two selected elements have overlapping bboxes
-5. Provide clear reasoning for your selection
+3. Select 2-5 regions that BEST represent this pattern
+4. **CRITICAL**: You MUST ONLY select regions from the group list provided above. Do NOT select any region_id that is NOT in the "Group Information" section.
+5. Ensure NO two selected regions have overlapping bboxes
+6. Provide clear reasoning for your selection
 
 **Output Format (JSON):**
-<think>
-[Your reasoning about:
-1. What is the core visual pattern shared by these elements?
-2. Which elements best represent this pattern?
-3. Why did you exclude certain elements?
-4. How many elements did you select and why (2-5)?
-5. Did you verify no bbox overlaps?]
-</think>
-
 {{
   "selected_region_ids": [
     {{
       "region_id": "1-0",
-      "selection_reason": "Why this element was selected"
+      "selection_reason": "Why this region was selected"
     }},
     {{
       "region_id": "1-2",
-      "selection_reason": "Why this element was selected"
+      "selection_reason": "Why this region was selected"
     }},
-    // ... 2-5 elements total
+    // ... 2-5 regions total
   ],
   "excluded_region_ids": [
     {{
       "region_id": "1-3",
-      "exclusion_reason": "Why this element was excluded"
+      "exclusion_reason": "Why this region was excluded"
     }},
-    // ... other excluded elements
+    // ... other excluded regions
   ],
   "visual_pattern": "Description of the common visual pattern",
   "final_count": 3,
@@ -240,40 +224,35 @@ We have identified a group of UI elements that are visually similar and function
 }}
 
 **Requirements:**
-- You MUST select between 2-5 elements (no more, no less)
-- Selected elements MUST have NO bbox overlaps
-- Prioritize elements with highest visual similarity
-- Ensure functional diversity among selected elements
+- **CRITICAL**: You MUST ONLY select region_ids from the "Group Information" list above. Any region_id NOT in that list will be rejected.
+- You MUST select between 2-5 regions (no more, no less)
+- Selected regions MUST have NO bbox overlaps
+- Prioritize regions with highest visual similarity
+- Ensure functional diversity among selected regions
 - Provide clear reasoning for each selection/exclusion
 - **IMPORTANT**: Only return region_id - do NOT copy bbox or functionality, they are already accurate in our database
 
-Now analyze the screenshot and select the best elements:"""
+Now analyze the screenshot and select the best regions:"""
 
 # Grounding Mode: Generate question based on text information (Mode 1 logic)
-GENERATE_QUESTION_GROUNDING_MODE_PROMPT = """Based on the following visually similar elements with different functionalities, generate a multiple-choice question to test if an agent can predict the outcome or purpose of interacting with them.
+GENERATE_QUESTION_GROUNDING_MODE_PROMPT = """Based on the following visually similar regions with different functionalities, generate a multiple-choice question to test if an agent can predict the outcome or purpose of interacting with them.
 
-**Element Information:**
+**Region Information:**
 {element_info}
 
 **Task:**
-Generate a question asking the agent to predict what will happen when interacting with a specific element, or what purpose/goal the interaction serves.
+Generate a question asking the agent to predict what will happen when interacting with a specific region, or what purpose/goal the interaction serves.
 
 **Question Format Guidelines:**
 Focus on PREDICTION and OUTCOME, such as:
-- "If you want to [achieve specific goal], which element should you click?"
-- "Which element will [result/outcome] when clicked?"
-- "To [specific purpose/intention], which element would you interact with?"
-- "Clicking which element will lead to [specific result/interface]?"
+- "If you want to [achieve specific goal], which region should you click?"
+- "Which region will [result/outcome] when clicked?"
+- "To [specific purpose/intention], which region would you interact with?"
+- "Clicking which region will lead to [specific result/interface]?"
 
 **Output Format (JSON):**
-<think>
-[Your reasoning about:
-1. What specific outcome/purpose to ask about
-2. How to frame the question to test prediction ability]
-</think>
-
 {{
-  "question": "If you want to [specific goal/purpose], which element should you click?",
+  "question": "If you want to [specific goal/purpose], which region should you click?",
   "options": [
     {{
       "label": "A",
@@ -283,17 +262,17 @@ Focus on PREDICTION and OUTCOME, such as:
       "label": "B",
       "region_id": "1-2"
     }},
-    // ... include ALL elements from the group as options
+    // ... include ALL regions from the group as options
   ],
   "correct_answer": "A",  // The label of correct option
-  "explanation": "Why clicking this element will achieve the goal/produce the expected result"
+  "explanation": "Why clicking this region will achieve the goal/produce the expected result"
 }}
 
 **Requirements:**
-- **CRITICAL**: You MUST include ALL elements from the group information as options (do not select a subset)
+- **CRITICAL**: You MUST include ALL regions from the group information as options (do not select a subset)
 - Each option only needs "label" and "region_id" - do NOT copy bbox or description from the input (we already have them)
 - Question must focus on PREDICTION: what will happen, what goal will be achieved, what result will occur
-- Avoid questions like "Which element is for X?" - instead ask "To achieve X, which element should you use?"
+- Avoid questions like "Which region is for X?" - instead ask "To achieve X, which region should you use?"
 - Options should be ordered randomly (not by position)
 - All options except the correct one should be plausible distractors
 - Explanation should clearly describe the predicted outcome/result
@@ -301,33 +280,27 @@ Focus on PREDICTION and OUTCOME, such as:
 Please generate the question now:"""
 
 # Captioning Mode: Generate question with annotated image (Mode 5 logic)
-GENERATE_QUESTION_CAPTIONING_MODE_PROMPT = """You are an expert in GUI analysis. I will show you a GUI screenshot with ONE UI element highlighted by a red bounding box.
+GENERATE_QUESTION_CAPTIONING_MODE_PROMPT = """You are an expert in GUI analysis. I will show you a GUI screenshot with ONE UI region highlighted by a red bounding box.
 
-**This element belongs to a group of visually similar elements with different functionalities:**
+**This region belongs to a group of visually similar regions with different functionalities:**
 {group_elements_info}
 
-**Target Element (the one with red box):**
+**Target region (the one with red box):**
 {target_element_info}
 
 **Task:**
-Create a multiple-choice question asking about what will happen or what goal will be achieved when clicking the circled element.
-The options should describe the outcomes/purposes of ALL elements in this group (including the target element).
+Create a multiple-choice question asking about what will happen or what goal will be achieved when clicking the circled region.
+The options should describe the outcomes/purposes of ALL regions in this group (including the target region).
 
 **Question Format:**
 Focus on PREDICTION and OUTCOME:
-- "If you click the circled element, what will happen?"
-- "What is the expected result of clicking the circled element?"
-- "What goal can be achieved by clicking the circled element?"
+- "If you click the circled region, what will happen?"
+- "What is the expected result of clicking the circled region?"
+- "What goal can be achieved by clicking the circled region?"
 
 **Output Format (JSON):**
-<think>
-[Your reasoning about:
-1. How to rephrase each functionality as an outcome/result
-2. How to order the options to make the question challenging]
-</think>
-
 {{
-  "question": "If you click the circled element, what will happen?",
+  "question": "If you click the circled region, what will happen?",
   "options": [
     {{
       "label": "A",
@@ -344,20 +317,20 @@ Focus on PREDICTION and OUTCOME:
       "region_id": "2-1",
       "functionality": "Description of expected outcome/result (rephrased from functionality)"
     }}
-    // ... include all group elements as options
+    // ... include all group regions as options
   ],
-  "correct_answer": "A",  // The label of the option containing target element's outcome
-  "explanation": "Why this outcome/result will occur when clicking the circled element, and why other outcomes (from similar-looking elements) are incorrect"
+  "correct_answer": "A",  // The label of the option containing target region's outcome
+  "explanation": "Why this outcome/result will occur when clicking the circled region, and why other outcomes (from similar-looking regions) are incorrect"
 }}
 
 **Requirements:**
 - Question must focus on PREDICTION: what will happen, what result will occur, what goal will be achieved
 - Rephrase each functionality as an outcome/result (e.g., "Save document" → "The document will be saved")
-- Include ALL group elements' outcomes as options (the group may contain 2 or more elements)
-- One option must be the target element's outcome (the circled one)
+- Include ALL group regions' outcomes as options (the group may contain 2 or more regions)
+- One option must be the target region's outcome (the circled one)
 - Options should be shuffled randomly (not by spatial position)
-- Each option must include the region_id to identify which element it corresponds to
-- Explanation should describe the predicted outcome and highlight how to distinguish the target from other visually similar elements
+- Each option must include the region_id to identify which region it corresponds to
+- Explanation should describe the predicted outcome and highlight how to distinguish the target from other visually similar regions
 
 Please generate the question now:"""
 
@@ -813,49 +786,18 @@ def merge_groups(groups: List[Dict], merge_indices: List[tuple],
     return merged_groups
 
 
-def load_parent_child_relationships(image_path: str, cache_dir: str = None, image_key: str = None) -> Dict[str, set]:
+def load_parent_child_relationships(image_path: str, cache_dir: str = None) -> Dict[str, set]:
     """Load parent-child relationships from tree.json in cache directory
     
     Args:
-        image_path: Path to the image file (or image_key for androidcontrol format)
+        image_path: Path to the image file
         cache_dir: Cache directory path (if None, will try to infer)
-        image_key: Image key in format "{app_name}/{episode_id}/{step_id}" for androidcontrol mode
     
     Returns:
         Dictionary mapping region_id to set of its children IDs
         Returns empty dict if tree.json not found
     """
     try:
-        # For androidcontrol mode, use image_key to find tree.json directly
-        if image_key and cache_dir and os.path.isdir(cache_dir):
-            # image_key format: "{app_name}/{episode_id}/{step_id}"
-            tree_json_path = os.path.join(cache_dir, image_key, "tree.json")
-            if os.path.exists(tree_json_path):
-                with open(tree_json_path, 'r', encoding='utf-8') as f:
-                    tree_data = json.load(f)
-                
-                # Build parent-child mapping
-                parent_child_map = {}
-                for node_id, node_data in tree_data.items():
-                    if isinstance(node_data, dict) and 'children' in node_data:
-                        children = node_data.get('children', [])
-                        if children:
-                            parent_child_map[node_id] = set(children)
-                
-                return parent_child_map
-        
-        # Infer cache directory if not provided
-        if cache_dir is None:
-            # Try to find cache from common paths
-            possible_paths = [
-                "/mnt/vdb1/hongxin_li/AutoGUIv2/cache",
-                "/mnt/nvme0n1p1/hongxin_li/AutoGUIv2/cache",
-            ]
-            for path in possible_paths:
-                if os.path.exists(path):
-                    cache_dir = path
-                    break
-        
         if not cache_dir or not os.path.exists(cache_dir):
             return {}
         
@@ -1167,12 +1109,7 @@ def save_result_per_image(image_key: str, result: Dict, output_dir: str, metadat
         }
     
     # Extract image basename (without extension) for filename
-    # For androidcontrol format (app/ep/step), use the full path as basename (replace / with _)
-    if '/' in image_key and not os.path.isfile(image_key):
-        # androidcontrol format: app_name/episode_id/step_id
-        image_basename = image_key.replace('/', '_')
-    else:
-        image_basename = os.path.splitext(os.path.basename(image_key))[0]
+    image_basename = os.path.splitext(os.path.basename(image_key))[0]
     
     generation_mode = result.get('generation_mode', 'unknown')
     output_files = []
@@ -1625,10 +1562,25 @@ class MultiChoiceQAGenerator:
                 selected_items = selection_result.get('selected_region_ids', [])
                 selected_region_ids = [item['region_id'] for item in selected_items if isinstance(item, dict) and 'region_id' in item]
                 
-                # Validate count (must be 2-5)
+                # CRITICAL: Validate that all selected region IDs are in the original group
+                original_group_ids = set(group['region_ids'])
+                invalid_ids = [rid for rid in selected_region_ids if rid not in original_group_ids]
+                
+                if invalid_ids:
+                    if debug:
+                        debug_print(f"   ⚠️  Warning: Gemini returned {len(invalid_ids)} region IDs not in original group: {invalid_ids}", level="warn")
+                        debug_print(f"   Original group: {list(original_group_ids)}", level="info")
+                        debug_print(f"   Filtering out invalid IDs...", level="info")
+                    
+                    # Filter out invalid region IDs
+                    selected_region_ids = [rid for rid in selected_region_ids if rid in original_group_ids]
+                
+                # Validate count (must be 2-5) after filtering
                 if len(selected_region_ids) < 2 or len(selected_region_ids) > 5:
                     if debug:
-                        debug_print(f"   Invalid selection count: {len(selected_region_ids)} (expected 2-5)", level="warn")
+                        debug_print(f"   Invalid selection count after filtering: {len(selected_region_ids)} (expected 2-5)", level="warn")
+                        if invalid_ids:
+                            debug_print(f"   This may be due to invalid region IDs returned by Gemini", level="warn")
                     continue
                 
                 # Log result
@@ -1643,7 +1595,8 @@ class MultiChoiceQAGenerator:
                     'visual_pattern': selection_result.get('visual_pattern', ''),
                     'selection_summary': selection_result.get('selection_summary', ''),
                     'final_count': len(selected_region_ids),
-                    'excluded_count': len(group['region_ids']) - len(selected_region_ids)
+                    'excluded_count': len(group['region_ids']) - len(selected_region_ids),
+                    'raw_response': response  # Add raw response from Gemini
                 }
                 
             except Exception as e:
@@ -1843,6 +1796,8 @@ class MultiChoiceQAGenerator:
                         reason = verification_result.get('rejection_reason', 'Unknown')
                         debug_print(f"   Group REJECTED: {reason} ({elapsed:.2f}s)", level="warn")
                 
+                # Add raw response from Gemini
+                verification_result['raw_response'] = response
                 return verification_result
                 
             except Exception as e:
@@ -2069,6 +2024,8 @@ Description: {desc_text}"""
                 
                 # Validate question
                 if self._validate_question(question_data):
+                    # Add raw response from Gemini
+                    question_data['raw_response'] = response
                     if debug:
                         debug_print(f"Grounding question generated successfully ({elapsed:.2f}s)", level="success")
                     return question_data
@@ -2259,6 +2216,7 @@ Description: {desc_text}"""
                     question_data['target_region_id'] = target_region_id
                     question_data['annotated_image_path'] = save_path
                     question_data['image_path'] = image_path  # Add original image path for consistency
+                    question_data['raw_response'] = response  # Add raw response from Gemini
                     
                     if debug:
                         debug_print(f"Captioning question generated successfully ({elapsed:.2f}s)", level="success")
@@ -2415,18 +2373,6 @@ def process_image(args) -> Dict:
         # Get image path
         image_path = image_data.get('root_image_path') or image_key
         
-        # For androidcontrol mode, image_key is in format "{app_name}/{episode_id}/{step_id}"
-        # Try to construct path from cache_dir if image_path doesn't exist
-        if not os.path.exists(image_path) and cache_dir_global and '/' in image_key:
-            # androidcontrol format: try root.png in cache directory
-            candidate_path = os.path.join(cache_dir_global, image_key, "root.png")
-            if os.path.exists(candidate_path):
-                image_path = candidate_path
-            else:
-                # Try to get from image_data if available
-                if 'root_image_path' in image_data:
-                    image_path = image_data['root_image_path']
-        
         # If image_path is relative, try to resolve it
         if not os.path.isabs(image_path):
             if cache_dir_global:
@@ -2485,9 +2431,7 @@ def process_image(args) -> Dict:
             debug_print(f"   Generation mode: {generation_mode}", level="info")
         
         # Load parent-child relationships to exclude from similarity calculation and merge filtering
-        # For androidcontrol mode, pass image_key to help locate tree.json
-        image_key_for_tree = image_key if '/' in image_key else None  # androidcontrol format: app/ep/step
-        parent_child_map = load_parent_child_relationships(image_path, cache_dir_global, image_key_for_tree)
+        parent_child_map = load_parent_child_relationships(image_path, cache_dir_global)
         
         if effective_debug and parent_child_map:
             debug_print(f"   Loaded parent-child relationships for filtering", level="info")
@@ -2573,18 +2517,49 @@ def process_image(args) -> Dict:
                 else:
                     refined_region_ids = group['region_ids']
                 
+                # CRITICAL: Validate that all refined region IDs are in the original group
+                # (Gemini might return region_ids from other candidates that weren't in the initial group)
+                original_group_ids = set(group['region_ids'])
+                invalid_ids = [rid for rid in refined_region_ids if rid not in original_group_ids]
+                
+                if invalid_ids:
+                    if effective_debug:
+                        debug_print(f"   ⚠️  警告: Gemini返回了 {len(invalid_ids)} 个不在原始组中的region IDs: {invalid_ids}", level="warn")
+                        debug_print(f"   原始组: {list(original_group_ids)}", level="info")
+                        debug_print(f"   过滤无效的region IDs...", level="info")
+                    
+                    # Filter out invalid region IDs
+                    refined_region_ids = [rid for rid in refined_region_ids if rid in original_group_ids]
+                
+                # Validate count (must be >= 2) after filtering
+                if len(refined_region_ids) < 2:
+                    if effective_debug:
+                        debug_print(f"   ❌ 组 {group['group_id']} 被跳过: 过滤后元素不足 ({len(refined_region_ids)} < 2)", level="warn")
+                        if invalid_ids:
+                            debug_print(f"   原因: Gemini返回了无效的region IDs，过滤后元素数量不足", level="info")
+                    
+                    rejected_groups.append({
+                        **group,
+                        'rejection_reason': f'Too few elements after validation ({len(refined_region_ids)} < 2). Invalid region IDs returned by Gemini: {invalid_ids}' if invalid_ids else f'Too few elements after validation ({len(refined_region_ids)} < 2)',
+                        'rejection_stage': 'gemini_first_pass_validation'
+                    })
+                    continue
+                
                 # 创建refined group
                 refined_group = copy.deepcopy(group)
                 refined_group['region_ids'] = refined_region_ids
                 refined_group['visual_similarity_description'] = verification_result.get('visual_similarity_description', '')
                 refined_group['gemini_verified'] = True
                 refined_group['gemini_adjustments'] = verification_result.get('adjustments_made', 'None')
+                refined_group['raw_response'] = verification_result.get('raw_response', '')  # Add raw Gemini response
                 
-                # Track added elements
+                # Track added elements (only those that are actually in the original group)
                 if kept_items:
                     added_from_candidates = [
                         item['region_id'] for item in kept_items 
-                        if isinstance(item, dict) and item.get('keep', True) and item.get('source') == 'added_from_candidates'
+                        if isinstance(item, dict) and item.get('keep', True) 
+                        and item.get('source') == 'added_from_candidates'
+                        and item['region_id'] in original_group_ids  # Only count if actually in original group
                     ]
                     if added_from_candidates:
                         refined_group['added_from_candidates'] = added_from_candidates
@@ -2592,7 +2567,10 @@ def process_image(args) -> Dict:
                 gemini_first_pass.append(refined_group)
                 
                 if effective_debug:
-                    debug_print(f"   ✅ 组 {group['group_id']} 通过验证: {len(group['region_ids'])} → {len(refined_region_ids)} 元素", level="success")
+                    if invalid_ids:
+                        debug_print(f"   ✅ 组 {group['group_id']} 通过验证（已过滤无效IDs）: {len(group['region_ids'])} → {len(refined_region_ids)} 元素", level="success")
+                    else:
+                        debug_print(f"   ✅ 组 {group['group_id']} 通过验证: {len(group['region_ids'])} → {len(refined_region_ids)} 元素", level="success")
             else:
                 reason = verification_result.get('rejection_reason', 'Unknown') if verification_result else 'Verification failed'
                 rejected_groups.append({
@@ -2816,6 +2794,7 @@ def process_image(args) -> Dict:
                         refined_group['visual_pattern'] = selection_result.get('visual_pattern', '')
                         refined_group['gemini_refined'] = True
                         refined_group['original_size'] = len(group['region_ids'])
+                        refined_group['raw_response'] = selection_result.get('raw_response', '')  # Add raw Gemini response
                         gemini_second_pass.append(refined_group)
                         
                         if effective_debug:
@@ -3064,198 +3043,16 @@ def process_image(args) -> Dict:
         }
 
 
-def load_androidcontrol_from_cache(cache_dir: str, debug: bool = False) -> Dict:
-    """Load androidcontrol dataset directly from cache directory
-    
-    Args:
-        cache_dir: Cache directory path (e.g., /mnt/vdb1/hongxin_li/AutoGUIv2/cache/androidcontrol/gemini-2.5-pro-thinking/v2)
-        debug: Whether to print debug info
-    
-    Returns:
-        Dictionary mapping image_key to image_data (same format as load_annotation_results)
-    """
-    if not os.path.exists(cache_dir) or not os.path.isdir(cache_dir):
-        raise FileNotFoundError(f"Cache directory not found: {cache_dir}")
-    
-    if debug:
-        debug_print(f"Loading androidcontrol data from cache directory: {cache_dir}", level="step")
-    
-    results = {}
-    bbox_correction_count = 0
-    reannotation_count = 0
-    
-    # Scan all image directories: {app_name}/{episode_id}/{step_id}/
-    app_dirs = [d for d in os.listdir(cache_dir) if os.path.isdir(os.path.join(cache_dir, d))]
-    
-    for app_name in app_dirs:
-        app_path = os.path.join(cache_dir, app_name)
-        episode_dirs = [d for d in os.listdir(app_path) if os.path.isdir(os.path.join(app_path, d))]
-        
-        for episode_id in episode_dirs:
-            episode_path = os.path.join(app_path, episode_id)
-            step_dirs = [d for d in os.listdir(episode_path) if os.path.isdir(os.path.join(episode_path, d))]
-            
-            for step_id in step_dirs:
-                image_dir = os.path.join(episode_path, step_id)
-                tree_json_path = os.path.join(image_dir, "tree.json")
-                root_png_path = os.path.join(image_dir, "root.png")
-                nodes_dir = os.path.join(image_dir, "nodes")
-                
-                # Check if tree.json exists
-                if not os.path.exists(tree_json_path):
-                    if debug:
-                        debug_print(f"   Skipping {app_name}/{episode_id}/{step_id}: tree.json not found", level="warn")
-                    continue
-                
-                # Load tree.json
-                try:
-                    with open(tree_json_path, 'r', encoding='utf-8') as f:
-                        tree_data = json.load(f)
-                except Exception as e:
-                    if debug:
-                        debug_print(f"   Failed to load tree.json for {app_name}/{episode_id}/{step_id}: {e}", level="warn")
-                    continue
-                
-                # Construct image_key (relative path from cache root)
-                image_key = f"{app_name}/{episode_id}/{step_id}"
-                
-                # Use root.png path if exists, otherwise try to infer from tree_data
-                if os.path.exists(root_png_path):
-                    root_image_path = root_png_path
-                else:
-                    # Try to get from tree_data (0-0 node usually has root_image_path)
-                    root_image_path = tree_data.get('0-0', {}).get('root_image_path', root_png_path)
-                
-                # Store image data
-                results[image_key] = tree_data.copy()
-                results[image_key]['root_image_path'] = root_image_path
-                
-                # Load reannotations from nodes directory
-                if os.path.isdir(nodes_dir):
-                    for node_id in tree_data.keys():
-                        if not isinstance(tree_data[node_id], dict):
-                            continue
-                        
-                        # Find reannotation files
-                        reannotation_files = glob.glob(os.path.join(nodes_dir, f"{node_id}_meta_reannotated*.json"))
-                        
-                        if reannotation_files:
-                            latest_reannotation = sorted(reannotation_files)[-1]
-                            
-                            try:
-                                with open(latest_reannotation, 'r', encoding='utf-8') as rf:
-                                    reannotation_data = json.load(rf)
-                                
-                                # Extract corrected bbox
-                                corrected_bbox = reannotation_data.get('corrected_bbox')
-                                if corrected_bbox and len(corrected_bbox) == 4:
-                                    original_bbox = tree_data[node_id].get('bbox_global')
-                                    
-                                    # If corrected_bbox differs from original, update the bbox
-                                    if original_bbox != corrected_bbox:
-                                        results[image_key][node_id]['bbox_global'] = corrected_bbox
-                                        
-                                        if 'root_size(wxh)' in results[image_key][node_id]:
-                                            w, h = results[image_key][node_id]['root_size(wxh)']
-                                            if w > 0 and h > 0:
-                                                results[image_key][node_id]['bbox_global_norm'] = [
-                                                    corrected_bbox[0] / w,
-                                                    corrected_bbox[1] / h,
-                                                    corrected_bbox[2] / w,
-                                                    corrected_bbox[3] / h
-                                                ]
-                                    
-                                    # Mark as corrected
-                                    results[image_key][node_id]['bbox_corrected'] = True
-                                    bbox_correction_count += 1
-                                
-                                # Extract revised functionality and description
-                                new_functionality = reannotation_data.get('new_functionality', {})
-                                if isinstance(new_functionality, dict):
-                                    revised_func = new_functionality.get('revised functionality')
-                                    revised_desc = new_functionality.get('revised description')
-                                    
-                                    # Update functionality if available
-                                    if revised_func:
-                                        # Store old functionality for reference
-                                        if 'functionality' in results[image_key][node_id]:
-                                            old_func = results[image_key][node_id]['functionality']
-                                            if isinstance(old_func, dict):
-                                                results[image_key][node_id]['functionality_original'] = old_func.copy()
-                                            else:
-                                                results[image_key][node_id]['functionality_original'] = old_func
-                                        
-                                        # Update with revised functionality
-                                        results[image_key][node_id]['functionality'] = {
-                                            'wo_context': revised_func,
-                                            'with_context': revised_func
-                                        }
-                                    
-                                    # Update description if available
-                                    if revised_desc:
-                                        # Store old description for reference
-                                        if 'description' in results[image_key][node_id]:
-                                            old_desc = results[image_key][node_id]['description']
-                                            if isinstance(old_desc, dict):
-                                                results[image_key][node_id]['description_original'] = old_desc.copy()
-                                            else:
-                                                results[image_key][node_id]['description_original'] = old_desc
-                                        
-                                        # Update with revised description
-                                        results[image_key][node_id]['description'] = {
-                                            'wo_context': revised_desc,
-                                            'with_context': revised_desc
-                                        }
-                                    
-                                    # Mark as reannotated
-                                    if revised_func or revised_desc:
-                                        results[image_key][node_id]['reannotated'] = True
-                                        results[image_key][node_id]['reannotation_file'] = os.path.basename(latest_reannotation)
-                                        reannotation_count += 1
-                            
-                            except Exception as e:
-                                if debug:
-                                    debug_print(f"   Warning: Failed to load reannotation file {latest_reannotation}: {e}", level="warn")
-                                continue
-    
-    if debug:
-        debug_print(f"Successfully loaded {len(results)} images from cache directory", level="success")
-        debug_print(f"  - {bbox_correction_count} regions with corrected bbox", level="info")
-        debug_print(f"  - {reannotation_count} regions with revised functionality/description", level="info")
-    
-    return results
-
-
-def load_annotation_results(annotation_file: str = None, cache_dir: str = None) -> Dict:
+def load_annotation_results(annotation_file: str, cache_dir: str = None) -> Dict:
     """Load functional region annotation results
     
     Args:
-        annotation_file: Main annotation JSON file path (optional for androidcontrol mode)
+        annotation_file: Main annotation JSON file path
         cache_dir: Cache directory path, will read manually corrected bbox if provided
-                  If annotation_file is None and cache_dir points to androidcontrol cache, 
-                  will load directly from cache directory
     """
-    # Check if we should load directly from cache (androidcontrol mode)
-    if annotation_file is None or not os.path.exists(annotation_file):
-        # Try to load from cache directory if it looks like androidcontrol structure
-        if cache_dir and os.path.isdir(cache_dir):
-            # Check if cache_dir structure matches androidcontrol: {dataset}/{model}/{version}/
-            cache_parts = cache_dir.rstrip('/').split(os.sep)
-            if len(cache_parts) >= 3:
-                # Check if it's androidcontrol cache structure
-                if 'androidcontrol' in cache_parts or os.path.basename(cache_dir) == 'v2':
-                    # This looks like androidcontrol cache, load directly
-                    return load_androidcontrol_from_cache(cache_dir, debug=True)
-        
-        # If annotation_file is required but not found, raise error
-        if annotation_file and not os.path.exists(annotation_file):
-            raise FileNotFoundError(f"Annotation file not found: {annotation_file}")
-        
-        # If annotation_file is None and we can't load from cache, raise error
-        if annotation_file is None:
-            raise ValueError("Either annotation_file or valid cache_dir must be provided")
+    if not os.path.exists(annotation_file):
+        raise FileNotFoundError(f"Annotation file not found: {annotation_file}")
     
-    # Original loading logic (for non-androidcontrol datasets)
     with open(annotation_file, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
@@ -3557,10 +3354,7 @@ def main(args):
     
     debug_print("", level="info")
     debug_print("DATA CONFIGURATION", level="step")
-    if args.input_file:
-        debug_print(f"   Input file: {Fore.CYAN}{args.input_file}{Style.RESET_ALL}", level="info")
-    else:
-        debug_print(f"   Input mode: {Fore.GREEN}Direct from cache (androidcontrol){Style.RESET_ALL}", level="info")
+    debug_print(f"   Input file: {Fore.CYAN}{args.input_file}{Style.RESET_ALL}", level="info")
     
     # Determine output mode
     use_per_image_output = args.output_dir is not None
@@ -3615,16 +3409,7 @@ def main(args):
     debug_print("=" * 60, level="title")
     
     # Load data
-    debug_print(f"Loading functional region annotation data...", level="step")
-    # For androidcontrol mode, input_file can be None and we load directly from cache_dir
-    if args.input_file is None:
-        if not args.cache_dir or not os.path.isdir(args.cache_dir):
-            debug_print("Error: --input-file is required when --cache-dir is not a valid androidcontrol cache directory", level="error")
-            return
-        debug_print(f"Loading androidcontrol data directly from cache directory: {args.cache_dir}", level="info")
-    else:
-        debug_print(f"Loading from annotation file: {args.input_file}", level="info")
-    
+    debug_print(f"Loading functional region annotation file...", level="step")
     annotation_results = load_annotation_results(args.input_file, args.cache_dir)
     
     if not annotation_results:
@@ -3632,6 +3417,54 @@ def main(args):
         return
     
     debug_print(f"Loaded annotation data for {len(annotation_results)} images", level="success")
+    
+    # Test mode: Filter to single image if --test-image is specified
+    if args.test_image:
+        debug_print("", level="info")
+        debug_print("=" * 60, level="warn")
+        debug_print("⚠️  TEST MODE: Single Image Processing", level="warn")
+        debug_print("=" * 60, level="warn")
+        debug_print(f"   Searching for image matching: '{args.test_image}'", level="info")
+        
+        # Find matching image(s)
+        matching_images = {}
+        for image_key in annotation_results.keys():
+            # Match by: exact key, basename, or substring
+            if (args.test_image == image_key or 
+                os.path.basename(image_key) == args.test_image or
+                args.test_image in image_key or
+                args.test_image in os.path.basename(image_key)):
+                matching_images[image_key] = annotation_results[image_key]
+        
+        if not matching_images:
+            debug_print("", level="info")
+            debug_print(f"❌ Error: No image found matching '{args.test_image}'", level="error")
+            debug_print("", level="info")
+            debug_print("Available images:", level="info")
+            for i, key in enumerate(sorted(annotation_results.keys())[:10]):
+                debug_print(f"   {i+1}. {key}", level="info")
+            if len(annotation_results) > 10:
+                debug_print(f"   ... and {len(annotation_results) - 10} more", level="info")
+            debug_print("", level="info")
+            debug_print("=" * 60, level="error")
+            return
+        
+        if len(matching_images) > 1:
+            debug_print("", level="info")
+            debug_print(f"⚠️  Warning: Multiple images matched '{args.test_image}':", level="warn")
+            for i, key in enumerate(matching_images.keys()):
+                debug_print(f"   {i+1}. {key}", level="info")
+            debug_print(f"   Using first match: {list(matching_images.keys())[0]}", level="warn")
+            debug_print("", level="info")
+            # Keep only the first match
+            first_key = list(matching_images.keys())[0]
+            matching_images = {first_key: matching_images[first_key]}
+        
+        annotation_results = matching_images
+        test_image_key = list(matching_images.keys())[0]
+        debug_print(f"✅ Test image selected: {test_image_key}", level="success")
+        debug_print("=" * 60, level="warn")
+        debug_print("", level="info")
     
     # Count region info
     total_regions = sum(
@@ -3824,28 +3657,16 @@ if __name__ == "__main__":
         epilog="""
 Example usage:
 
-  # ANDROIDCONTROL MODE: Load directly from cache directory (no input-file needed)
-    python gen_region-func_multichoice-qa_aliyun_androidcontrol.py \
-      --cache-dir /mnt/vdb1/hongxin_li/AutoGUIv2/cache/androidcontrol/gemini-2.5-pro-thinking/v2 \
-      --output-dir /path/to/output \
-      --generation-mode both \
-      --model gemini-2.5-pro-thinking \
-      --api-key "YOUR_API_KEY" \
-      --base-url "https://xiaoai.plus/v1" \
-      --aliyun-api-key "YOUR_ALIYUN_KEY" \
-      --debug
-
   # RECOMMENDED: Both Modes (saves tokens by reusing grouping and verification!)
-    python gen_region-func_multichoice-qa_aliyun_androidcontrol.py \
+    python gen_region-func_multichoice-qa_easy.py \
       --input-file /path/to/annotation.json \
       --output-dir /path/to/output \
       --generation-mode both \
       --cache-dir /path/to/cache \
-      --model gemini-2.5-pro-thinking \
+        --model gemini-2.5-pro-thinking \
       --api-key "YOUR_API_KEY" \
-      --base-url "https://xiaoai.plus/v1" \
-      --aliyun-api-key "YOUR_ALIYUN_KEY" \
-      --debug
+        --base-url "https://xiaoai.plus/v1" \
+        --debug
 
   # Output structure for "both" mode:
   #   /path/to/output/
@@ -3858,7 +3679,7 @@ Example usage:
   #       _processing_summary.json
 
   # Grounding Mode only: Embedding grouping + text-based region grounding QA
-    python gen_region-func_multichoice-qa.py \
+    python gen_region-func_multichoice-qa_easy.py \
       --input-file /path/to/annotation.json \
       --output-dir /path/to/output/grounding_mode \
       --generation-mode grounding_mode \
@@ -3869,7 +3690,7 @@ Example usage:
       --debug
 
   # Captioning Mode only: Embedding grouping + annotated image captioning QA
-    python gen_region-func_multichoice-qa.py \
+    python gen_region-func_multichoice-qa_easy.py \
       --input-file /path/to/annotation.json \
       --output-dir /path/to/output/captioning_mode \
       --generation-mode captioning_mode \
@@ -3907,13 +3728,6 @@ Key Features:
   - High-quality groups: Only groups validated by both text-based visual descriptions AND vision models
   - NO GPU required: Uses cloud APIs for all heavy computation
 
-AndroidControl Mode:
-  - For androidcontrol dataset, you can skip --input-file and load directly from cache directory
-  - Cache directory structure: {app_name}/{episode_id}/{step_id}/
-    * Each image directory contains: tree.json, root.png, nodes/ directory
-    * Reannotated data in nodes/{node_id}_meta_reannotated*.json
-  - Example: --cache-dir /mnt/vdb1/hongxin_li/AutoGUIv2/cache/androidcontrol/gemini-2.5-pro-thinking/v2
-
 Requirements:
   - OpenAI client library: pip install openai
   - Aliyun DashScope API key (set DASHSCOPE_API_KEY environment variable or use --aliyun-api-key)
@@ -3930,12 +3744,12 @@ API Limits:
         """
     )
     
-    parser.add_argument("--input-file", required=False, default=None,
-                       help="Input functional region annotation JSON file (optional for androidcontrol mode - will load from cache_dir if not provided)")
+    parser.add_argument("--input-file", required=True,
+                       help="Input functional region annotation JSON file")
     parser.add_argument("--output-dir", required=True,
                        help="Output directory for per-image mode (one JSON file per image)")
     parser.add_argument("--output-file", default=None, help=argparse.SUPPRESS)  # Hidden, not used
-    parser.add_argument("--cache-dir", type=str, default="/mnt/vdb1/hongxin_li/AutoGUIv2/cache",
+    parser.add_argument("--cache-dir", type=str, default="cache",
                        help="Cache directory path for reading reannotations (*_meta_reannotated*.json containing corrected bbox + revised functionality/description) and tree.json")
     parser.add_argument("--generation-mode", type=str, choices=["grounding_mode", "captioning_mode", "both"], default="both",
                        help="Question generation mode: grounding_mode=text-based region grounding QA, captioning_mode=annotated image captioning QA, both=generate both modes simultaneously (recommended to save tokens)")
@@ -3958,6 +3772,8 @@ API Limits:
                        help="Force reprocess already processed images")
     parser.add_argument("--use-all-regions", action="store_true",
                        help="Use all regions including those without bbox correction or reannotation (not recommended - only fully corrected and reannotated regions guarantee quality)")
+    parser.add_argument("--test-image", type=str, default=None,
+                       help="Test with a single image only (provide image key, filename, or path substring for matching)")
     
     args = parser.parse_args()
     

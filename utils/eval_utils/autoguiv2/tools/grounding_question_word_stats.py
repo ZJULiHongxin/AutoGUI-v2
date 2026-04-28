@@ -3,18 +3,12 @@
 Compute word statistics for question fields in grounding_mode result files.
 """
 
+import argparse
 import glob
 import json
 import os
 import re
 from typing import Iterable, List, Tuple
-
-GROUNDING_RESULT_DIRS: List[str] = [
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/agentnet/FuncRegion/grounding_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/amex/FuncRegion/grounding_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/osworld_g/FuncRegion/grounding_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/screenspot_pro/FuncRegion/grounding_mode",
-]
 
 RESULT_PATTERN = "**/*_result.json"
 WORD_PATTERN = re.compile(r"[A-Za-z0-9_]+(?:'[A-Za-z0-9_]+)?")
@@ -51,11 +45,11 @@ def count_words(text: str) -> int:
     return len(WORD_PATTERN.findall(text))
 
 
-def compute_stats() -> Tuple[int, int]:
+def compute_stats(directories: Iterable[str]) -> Tuple[int, int]:
     total_questions = 0
     total_words = 0
 
-    for path in iter_result_files(GROUNDING_RESULT_DIRS):
+    for path in iter_result_files(directories):
         for question_data in load_questions(path):
             question_text = question_data.get("question")
             if isinstance(question_text, str) and question_text.strip():
@@ -65,7 +59,15 @@ def compute_stats() -> Tuple[int, int]:
 
 
 def main() -> None:
-    total_questions, total_words = compute_stats()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "directories",
+        nargs="+",
+        help="Grounding-mode result directories to scan recursively (e.g. ./tasks/region/grounding_mode).",
+    )
+    args = parser.parse_args()
+
+    total_questions, total_words = compute_stats(args.directories)
     average = (total_words / total_questions) if total_questions else 0.0
     print(f"Total question count: {total_questions}")
     print(f"Total word count (question field only): {total_words}")

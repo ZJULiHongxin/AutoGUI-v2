@@ -3,7 +3,7 @@
 """
 为生成的问题数据添加 area_class 和 density_class 指标，并可选择性地补充其他字段
 
-复用 FuncRegionGnd_eval_gen/make_funcreg_gnd_samples.py 中的计算工具：
+内置两个计算工具：
 - GUISizeClassifier: 计算目标功能区面积占比
 - EnhancedNIDAnalyzer: 计算目标区域周围密集度
 
@@ -18,23 +18,160 @@ import sys
 import json
 import glob
 import argparse
+import math
 from typing import Dict, List, Tuple
 from tqdm import tqdm
 
 # Add project root to path
-sys.path.append('/'.join(__file__.split('/')[:-4]))
+sys.path.append('/'.join(__file__.split('/')[:-5]))
 
-# Import the calculation tools
-sys.path.append('/mnt/nvme0n1p1/hongxin_li/highres_autogui/utils/data_utils/autoguiv2/FuncRegionGnd_eval_gen')
-from make_funcreg_gnd_samples import GUISizeClassifier, EnhancedNIDAnalyzer
 
-# Module-level caches
-_DATASET_REGION_TYPE_FILES = {
-    'osworld_g': '/mnt/vdb1/hongxin_li/AutoGUIv2/osworld_g/gemini-2.5-pro-thinking/v2/MMInstruction-OSWorld-G_region_types_gemini-2.5-pro-thinking.json',
-    'screenspot_pro': '/mnt/vdb1/hongxin_li/AutoGUIv2/screenspot_pro/gemini-2.5-pro-thinking/v2/HongxinLi-ScreenSpot-Pro_region_types_gemini-2.5-pro-thinking.json',
-    'agentnet': '/mnt/vdb1/hongxin_li/AutoGUIv2/agentnet/gemini-2.5-pro-thinking/v2/sujr-autogui-agentnet_region_types_gemini-2.5-pro-thinking.json',
-    'amex': '/mnt/vdb1/hongxin_li/AutoGUIv2/amex/gemini-2.5-pro-thinking/v2/functional_regions_gemini-2.5-pro-thinking_region_types_gemini-2.5-pro-thinking.json',
-}
+def _percentile(values: List[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * percentile / 100.0
+    lower = math.floor(rank)
+    upper = math.ceil(rank)
+    if lower == upper:
+        return ordered[int(rank)]
+    weight = rank - lower
+    return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
+class GUISizeClassifier:
+    """Classify GUI region size by relative screen area percentiles."""
+
+    def __init__(self):
+        self.thresholds: List[float] = []
+
+    def calculate_relative_areas(self, bboxes: List[List[float]], widths: List[int], heights: List[int]) -> List[float]:
+        areas = []
+        for bbox, width, height in zip(bboxes, widths, heights):
+            screen_area = max(float(width * height), 1.0)
+            box_area = max(float((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])), 0.0)
+            areas.append(box_area / screen_area * 100.0)
+        return areas
+
+    def analyze_distribution(self, relative_areas: List[float], percentiles: List[float]) -> Dict:
+        self.thresholds = [_percentile(relative_areas, p) for p in percentiles]
+        mean = sum(relative_areas) / len(relative_areas) if relative_areas else 0.0
+        return {
+            'thresholds': self.thresholds,
+            'statistics': {
+                'mean': mean,
+                'min': min(relative_areas) if relative_areas else 0.0,
+                'max': max(relative_areas) if relative_areas else 0.0,
+            },
+        }
+
+    def classify_element(self, relative_area: float) -> str:
+        if not self.thresholds:
+            raise ValueError("Call analyze_distribution before classify_element")
+        if relative_area <= self.thresholds[0]:
+            return 'tiny'
+        if relative_area <= self.thresholds[1]:
+            return 'small'
+        if relative_area <= self.thresholds[2]:
+            return 'medium'
+        return 'large'
+
+    def classify_all_elements(self, relative_areas: List[float]) -> List[str]:
+        return [self.classify_element(area) for area in relative_areas]
+
+    def get_class_distribution(self, classes: List[str]) -> Dict[str, Dict[str, float]]:
+        total = len(classes) or 1
+        return {
+            name: {
+                'count': classes.count(name),
+                'percentage': classes.count(name) / total * 100.0,
+            }
+            for name in ['tiny', 'small', 'medium', 'large']
+        }
+
+
+class EnhancedNIDAnalyzer:
+    """Normalized interference density analyzer for surrounding GUI elements."""
+
+    def __init__(self, k_sigma: float = 1.5, alpha: float = 1.0):
+        self.k_sigma = k_sigma
+        self.alpha = alpha
+        self.thresholds: List[float] = []
+
+    @staticmethod
+    def _center(bbox: List[float]) -> Tuple[float, float]:
+        return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+
+    @staticmethod
+    def _in_bbox(point: Tuple[float, float], bbox: List[float]) -> bool:
+        return bbox[0] <= point[0] <= bbox[2] and bbox[1] <= point[1] <= bbox[3]
+
+    def _analysis_region(self, bbox: List[float], width: int, height: int) -> List[float]:
+        x1, y1, x2, y2 = bbox
+        expand_x = self.alpha * (x2 - x1)
+        expand_y = self.alpha * (y2 - y1)
+        return [
+            max(0.0, x1 - 1.5 * expand_x),
+            max(0.0, y1 - 1.5 * expand_y),
+            min(float(width), x2 + 1.5 * expand_x),
+            min(float(height), y2 + 1.5 * expand_y),
+        ]
+
+    def calculate_nid_score(self, target_bbox: List[float], surr_norm_bboxes: List[List[float]], width: int, height: int) -> float:
+        cx, cy = self._center(target_bbox)
+        region = self._analysis_region(target_bbox, width, height)
+        sigma_x = max(self.k_sigma * (target_bbox[2] - target_bbox[0]), 1.0)
+        sigma_y = max(self.k_sigma * (target_bbox[3] - target_bbox[1]), 1.0)
+        score = 0.0
+        for norm_bbox in surr_norm_bboxes:
+            bbox = [norm_bbox[0] * width, norm_bbox[1] * height, norm_bbox[2] * width, norm_bbox[3] * height]
+            center = self._center(bbox)
+            if self._in_bbox(center, region) and not self._in_bbox(center, target_bbox):
+                score += math.exp(-0.5 * (((center[0] - cx) / sigma_x) ** 2 + ((center[1] - cy) / sigma_y) ** 2))
+        return score
+
+    def calculate_all_nid_scores(self, bboxes: List[List[float]], surr_bboxes: List[List[List[float]]],
+                                 widths: List[int], heights: List[int]) -> List[float]:
+        self._last_scores = [
+            self.calculate_nid_score(bbox, surr, width, height)
+            for bbox, surr, width, height in zip(bboxes, surr_bboxes, widths, heights)
+        ]
+        return self._last_scores
+
+    def classify_by_percentiles(self, percentiles: List[float]) -> Dict:
+        scores = getattr(self, '_last_scores', None)
+        if scores is None:
+            scores = []
+        self.thresholds = [_percentile(scores, p) for p in percentiles]
+        mean = sum(scores) / len(scores) if scores else 0.0
+        return {
+            'thresholds': self.thresholds,
+            'statistics': {
+                'mean': mean,
+                'min': min(scores) if scores else 0.0,
+                'max': max(scores) if scores else 0.0,
+            },
+        }
+
+    def classify_all_elements(self, scores: List[float]) -> List[str]:
+        self._last_scores = scores
+        if not self.thresholds:
+            self.thresholds = [_percentile(scores, 33), _percentile(scores, 67)]
+        classes = []
+        for score in scores:
+            if score <= self.thresholds[0]:
+                classes.append('sparse')
+            elif score <= self.thresholds[1]:
+                classes.append('medium')
+            else:
+                classes.append('dense')
+        return classes
+
+# Module-level caches. Public usage should pass --cache-dir or keep region-type
+# files next to the generated data instead of relying on private server paths.
+_DATASET_REGION_TYPE_FILES: Dict[str, str] = {}
 _LOADED_REGION_TYPE_INDICES: Dict[str, Dict] = {}
 _FAILED_REGION_TYPE_FILES: set = set()
 
@@ -56,7 +193,7 @@ def reorder_option_fields(option: Dict) -> None:
 def load_annotation_data(annotation_file: str, cache_dir: str = None) -> Dict:
     """加载原始标注数据（包括修订后的bbox和功能描述）
     
-    复用 gen_region-func_multichoice-qa_aliyun.py 中的加载逻辑
+    复用 gen_region-func_multichoice-qa_easy.py 中的加载逻辑
     """
     if not os.path.exists(annotation_file):
         raise FileNotFoundError(f"Annotation file not found: {annotation_file}")
@@ -1117,13 +1254,13 @@ if __name__ == "__main__":
     
     parser.add_argument(
         "--annotation-file",
-        default="/mnt/vdb1/hongxin_li/AutoGUIv2/screenspot_pro/gemini-2.5-pro-thinking/v2/HongxinLi-ScreenSpot-Pro.json",
+        required=True,
         help="原始标注文件路径"
     )
     
     parser.add_argument(
         "--result-dir",
-        default="/mnt/vdb1/hongxin_li/AutoGUIv2/screenspot_pro/FuncRegion",
+        required=True,
         help="生成的问题数据目录"
     )
     
@@ -1136,13 +1273,13 @@ if __name__ == "__main__":
     
     parser.add_argument(
         "--omniparser-dir",
-        default="/mnt/vdb1/hongxin_li/AutoGUIv2/screenspot_pro/omniparser",
+        required=True,
         help="OmniParser 数据目录"
     )
     
     parser.add_argument(
         "--cache-dir",
-        default="/mnt/vdb1/hongxin_li/AutoGUIv2/cache",
+        default="cache",
         help="Cache 目录路径（包含修订后的 bbox 和功能描述）"
     )
     
@@ -1168,4 +1305,3 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     main(args)
-

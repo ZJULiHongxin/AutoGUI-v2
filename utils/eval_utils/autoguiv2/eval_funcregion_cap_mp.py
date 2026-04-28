@@ -68,16 +68,33 @@ import sys
 sys.path.append('/'.join(__file__.split('/')[:-4]))
 from utils.openai_utils.openai import OpenAIModel
 from utils.openai_utils.qwen3vl import Qwen3VL
-from utils.openai_utils.doubao import DOUBAO
-from utils.openai_utils.stepfun import STEPFUN
-from utils.openai_utils.parasail import PARASAIL
 from utils.openai_utils.huggingface import HFEndpoint
+
+# Optional imports for models that may have missing dependencies.
+try:
+    from utils.openai_utils.doubao import DOUBAO
+except ImportError:
+    DOUBAO = None
+    debug_print("⚠️  DOUBAO not available (missing volcenginesdkarkruntime)", level="warn")
+
+try:
+    from utils.openai_utils.stepfun import STEPFUN
+except ImportError:
+    STEPFUN = None
+    debug_print("⚠️  STEPFUN not available", level="warn")
+
+try:
+    from utils.openai_utils.parasail import PARASAIL
+except ImportError:
+    PARASAIL = None
+    debug_print("⚠️  PARASAIL not available", level="warn")
+
 try:
     # For region type → 6-bucket mapping
-    repo_root = "/mnt/nvme0n1p1/hongxin_li/highres_autogui"
-    if repo_root not in sys.path:
-        sys.path.append(repo_root)
-    from utils.data_utils.autoguiv2.FuncElemQA_eval_gen.eval.count_region_types import resolve_parent_category  # type: ignore
+    try:
+        from tools.count_region_types import resolve_parent_category  # type: ignore
+    except Exception:
+        from utils.eval_utils.autoguiv2.tools.count_region_types import resolve_parent_category  # type: ignore
 except Exception:
     def resolve_parent_category(leaf_type: str) -> str:
         return "Others"
@@ -143,8 +160,17 @@ OPENCUA_SYSPROMPT = (
     "You need to perform a series of pyautogui actions to complete the task."
 )
 
-# Multiple choice prompt for funccap task
-FUNCCAP_PROMPT = """You are a GUI expert. Given an image with a circled UI region, you need to identify the functionality of that region.
+# Multiple choice prompts for funccap task
+SINGLE_FUNCCAP_PROMPT = """You are a GUI expert. Given an image with a circled UI region, you need to identify the functionality of that region.
+
+Question: {question}
+
+Options:
+{options}
+
+Please select the correct answer by providing only the option letter (A, B, C, D, etc.). Return just the letter corresponding to one of the provided options."""
+
+MULTI_FUNCCAP_PROMPT = """You are a GUI expert. Given an image with a circled UI region, you need to identify the functionality of that region.
 
 Question: {question}
 
@@ -153,7 +179,18 @@ Options:
 
 Return ONLY the option letters separated by commas (e.g., "A,C,E" for multiple answers, or "A" for a single answer). Do not include any explanation."""
 
-FUNCCAP_DEFAULT_QUESTION = "Which options accurately describe the functionality of the region marked with a red rectangle? (Select all that apply)"
+SINGLE_FUNCCAP_DEFAULT_QUESTION = "Which option most accurately describes the functionality of the region marked with a red rectangle?"
+MULTI_FUNCCAP_DEFAULT_QUESTION = "Which options accurately describe the functionality of the region marked with a red rectangle? (Select all that apply)"
+FUNCCAP_PROMPT = SINGLE_FUNCCAP_PROMPT
+FUNCCAP_DEFAULT_QUESTION = SINGLE_FUNCCAP_DEFAULT_QUESTION
+
+
+def _first_not_none(*values: Any) -> Any:
+    """Return the first value that is not None, preserving valid falsy values like 0."""
+    for value in values:
+        if value is not None:
+            return value
+    return None
 
 def _normalize_correct_indices(raw_value: Any, options_len: int, option_labels: Optional[List[str]] = None,
                                option_texts: Optional[List[str]] = None) -> List[int]:
@@ -384,8 +421,12 @@ def load_dataset_from_json(questions_file: str) -> List[Dict[str, Any]]:
 
             correct_answer_label = q_data.get('correct_answer', '')
             correct_answer_labels = q_data.get('correct_answers', None)
-            raw_correct = (q_data.get('correct_option_indices') or q_data.get('correct_option_idx') or
-                           q_data.get('correct_indices') or q_data.get('correct_index'))
+            raw_correct = _first_not_none(
+                q_data.get('correct_option_indices'),
+                q_data.get('correct_option_idx'),
+                q_data.get('correct_indices'),
+                q_data.get('correct_index'),
+            )
             correct_option_indices = _normalize_correct_indices(
                 raw_correct, len(options), option_labels=option_labels, option_texts=option_functionalities
             )
@@ -640,7 +681,7 @@ def load_easy_funccap_dataset(questions_file: str) -> List[Dict[str, Any]]:
         annotated_image_path = entry.get("annotated_image_path", "")
         options = entry.get("options", [])
         correct_index = entry.get("correct_index", -1)
-        correct_indices = entry.get("correct_indices", None) or entry.get("correct_option_indices", None)
+        correct_indices = _first_not_none(entry.get("correct_indices", None), entry.get("correct_option_indices", None))
 
         if not isinstance(options, list) or not options:
             debug_print(f"⚠️  Skipping entry {idx}: missing options", level="warn")
@@ -953,12 +994,16 @@ def load_dataset_from_hf(hf_dataset_id: str, split: str = 'test', cache_dir: Opt
         if task_type in ('funccap', 'easy_funccap'):
             # For funccap, use fixed question and get options from dataset
             # Prefer option_contexts, fallback to option_functionalities
-            question = FUNCCAP_DEFAULT_QUESTION
+            question = item.get('question', '') or FUNCCAP_DEFAULT_QUESTION
             option_contexts = item.get('option_contexts', [])
             if not option_contexts:
                 option_contexts = item.get('option_functionalities', [])
-            raw_correct = (item.get('correct_option_indices') or item.get('correct_option_idx') or
-                           item.get('correct_indices') or item.get('correct_index'))
+            raw_correct = _first_not_none(
+                item.get('correct_option_indices'),
+                item.get('correct_option_idx'),
+                item.get('correct_indices'),
+                item.get('correct_index'),
+            )
             correct_option_indices = _normalize_correct_indices(
                 raw_correct, len(option_contexts), option_texts=option_contexts
             )
@@ -1227,6 +1272,23 @@ def find_latest_checkpoint(eval_result_dir: str, model_name: str) -> Optional[st
 worker_model = None
 
 
+def _is_openai_reasoning_model(model_name: str) -> bool:
+    """Return True for OpenAI reasoning-style models (o1/o3/o4 series and gpt-5 default).
+
+    These models require ``temperature=1`` on the official API and burn a lot of
+    completion_tokens on internal reasoning, so we need a larger ``max_tokens``
+    budget. Middlewares like xiaoai.plus / one-api usually forward these
+    parameters verbatim.
+    """
+    m = model_name.lower()
+    if m.startswith(('o1', 'o3', 'o4')):
+        return True
+    # gpt-5 family: the plain/pinned variants are reasoning; gpt-5-chat is not.
+    if m.startswith('gpt-5') and 'chat' not in m:
+        return True
+    return False
+
+
 def init_worker(model_args: Dict):
     """Initialize worker with model"""
     global worker_model
@@ -1236,6 +1298,11 @@ def init_worker(model_args: Dict):
     model = model_args['model']
 
     MAX_TOKENS = 8192
+    # OpenAI o-series / gpt-5 reasoning models need more room and temperature=1.
+    is_reasoning = _is_openai_reasoning_model(model)
+    default_temperature = 1.0 if is_reasoning else 0.0
+    if is_reasoning:
+        MAX_TOKENS = 32768
     
     # Check if using local vllm deployment (localhost base_url)
     # For local vllm, always use OpenAIModel regardless of model name
@@ -1262,15 +1329,21 @@ def init_worker(model_args: Dict):
         api_key = api_key or os.environ.get("OPENAI_API_KEY_XIAOAI", "EMPTY")
         cloud_model_class = OpenAIModel
     elif 'tars' in model.lower():
+        if PARASAIL is None:
+            raise ImportError("PARASAIL model requires additional dependencies. Please install them first.")
         base_url = 'https://api.parasail.io/v1'
         api_key = api_key or os.environ.get("PARASAIL_API_KEY", "EMPTY")
         cloud_model_class = PARASAIL
         MAX_TOKENS = 2048
     elif 'seed' in model.lower():
+        if DOUBAO is None:
+            raise ImportError("DOUBAO model requires volcenginesdkarkruntime. Please install it first.")
         base_url = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
         api_key = api_key or os.environ.get("ARK_API_KEY", "EMPTY")
         cloud_model_class = DOUBAO
     elif 'step' in model.lower():
+        if STEPFUN is None:
+            raise ImportError("STEPFUN model requires additional dependencies. Please install them first.")
         base_url = 'https://api.stepfun.com/v1'
         api_key = api_key or os.environ.get("STEP_API_KEY", "EMPTY")
         cloud_model_class = STEPFUN
@@ -1287,7 +1360,7 @@ def init_worker(model_args: Dict):
         base_url=base_url,
         api_key=api_key,
         model=model,
-        temperature=0.0,
+        temperature=default_temperature,
         max_tokens=MAX_TOKENS
     )
 
@@ -1439,6 +1512,7 @@ def process_funccap_entry(entry: Dict, worker_id: int = 0) -> Dict[str, Any]:
     entry_id = entry['entry_id']
     image_path = entry['image_path']
     question = entry.get('question', FUNCCAP_DEFAULT_QUESTION)
+    answer_mode = entry.get('answer_mode', 'single')
     options = entry.get('options', [])
     correct_option_indices = entry.get('correct_option_indices', None)
     correct_option_idx = entry.get('correct_option_idx', -1)
@@ -1517,18 +1591,20 @@ def process_funccap_entry(entry: Dict, worker_id: int = 0) -> Dict[str, Any]:
             system_prompt = None
             
             # Handle model-specific prompts
+            prompt_template = MULTI_FUNCCAP_PROMPT if answer_mode == 'multi' else SINGLE_FUNCCAP_PROMPT
             if 'opencua' in worker_model.model.lower():
                 system_prompt = OPENCUA_SYSPROMPT
                 # For OpenCUA, use a simpler action-based prompt
-                prompt = f"{question}\n\nOptions:\n{options_text}\n\nSelect the correct option(s)."
+                instruction = "Select all correct options." if answer_mode == 'multi' else "Select the single correct option."
+                prompt = f"{question}\n\nOptions:\n{options_text}\n\n{instruction}"
             elif 'holo' in worker_model.model.lower():
                 # Holo models can use standard funccap prompt
-                prompt = FUNCCAP_PROMPT.format(question=question, options=options_text)
+                prompt = prompt_template.format(question=question, options=options_text)
             elif any(x in worker_model.model.lower() for x in ['infigui-g1', 'gui-r1', 'venus']):
                 # These models use standard prompt
-                prompt = FUNCCAP_PROMPT.format(question=question, options=options_text)
+                prompt = prompt_template.format(question=question, options=options_text)
             else:
-                prompt = FUNCCAP_PROMPT.format(question=question, options=options_text)
+                prompt = prompt_template.format(question=question, options=options_text)
             # print(f"[Worker {worker_id}] 📝 Funccap prompt follows:\n{prompt}\n")
             
             temp_img_path = image_path
@@ -2247,6 +2323,19 @@ def calculate_metrics(results: List[Dict], task_type: str = 'funcgnd') -> Dict[s
             }
         }
 
+ 
+def resolve_answer_mode(entries: List[Dict[str, Any]], requested_mode: str, force_multi_select: bool = False) -> str:
+    """Resolve single/multi captioning mode for a loaded dataset."""
+    if force_multi_select:
+        return 'multi'
+    if requested_mode in ('single', 'multi'):
+        return requested_mode
+    for entry in entries:
+        indices = entry.get('correct_option_indices')
+        if isinstance(indices, list) and len(indices) > 1:
+            return 'multi'
+    return 'single'
+
 
 def main(args):
     """Main evaluation function"""
@@ -2316,12 +2405,22 @@ def main(args):
         debug_print("❌ No entries found in dataset", level="error")
         return
     
-    # Override question format if force_multi_select is enabled
-    if getattr(args, 'force_multi_select', False):
-        debug_print(f"\n🔄 Forcing multi-select question format for all {len(entries)} entries...", level="step")
+    resolved_answer_mode = 'single'
+    if args.task_type in ('funccap', 'easy_funccap'):
+        resolved_answer_mode = resolve_answer_mode(
+            entries,
+            getattr(args, 'answer_mode', 'single'),
+            getattr(args, 'force_multi_select', False),
+        )
+        default_question = MULTI_FUNCCAP_DEFAULT_QUESTION if resolved_answer_mode == 'multi' else SINGLE_FUNCCAP_DEFAULT_QUESTION
+        debug_print(f"\n🔤 Answer mode: {Fore.CYAN}{resolved_answer_mode}{Style.RESET_ALL}", level="step")
         for entry in entries:
-            entry['question'] = FUNCCAP_DEFAULT_QUESTION
-        debug_print(f"   ✅ All questions updated to: {FUNCCAP_DEFAULT_QUESTION}", level="info")
+            entry['answer_mode'] = resolved_answer_mode
+            entry['question'] = entry.get('question') or default_question
+            if resolved_answer_mode == 'multi' or getattr(args, 'force_multi_select', False):
+                entry['question'] = MULTI_FUNCCAP_DEFAULT_QUESTION
+            elif entry['question'] == MULTI_FUNCCAP_DEFAULT_QUESTION:
+                entry['question'] = SINGLE_FUNCCAP_DEFAULT_QUESTION
     
     # If only printing samples, preview and exit early (no model/API usage)
     if getattr(args, 'print_samples', 0):
@@ -2347,7 +2446,10 @@ def main(args):
         return
     
     # Setup checkpoint and result file paths
-    eval_result_dir = os.path.join(os.path.dirname(__file__), 'eval_results', args.task_type)
+    eval_task_dir = args.task_type
+    if args.task_type in ('funccap', 'easy_funccap'):
+        eval_task_dir = f"{args.task_type}_{resolved_answer_mode}"
+    eval_result_dir = os.path.join(os.path.dirname(__file__), 'eval_results', eval_task_dir)
     os.makedirs(eval_result_dir, exist_ok=True)
     
     safe_model_name = args.model.replace('/', '_').replace('\\', '_')
@@ -2415,6 +2517,7 @@ def main(args):
             'timestamp': timestamp,
             'total_time': total_time,
             'num_workers': args.max_workers,
+            'answer_mode': resolved_answer_mode if args.task_type in ('funccap', 'easy_funccap') else None,
             'sample_limit': args.sample_limit if hasattr(args, 'sample_limit') else None
         },
         'metrics': metrics,
@@ -2553,13 +2656,13 @@ if __name__ == "__main__":
         epilog="""
 Examples:
   # Evaluate using JSON file:
-  python eval_funcgnd_mp.py --questions-file /path/to/grounding_questions.json --model gpt-4o
+  python eval_funcregion_cap_mp.py --questions-file /path/to/func_region_cap_hard.json --model gpt-4o --answer-mode single
   
   # Evaluate using HuggingFace dataset:
-  python eval_funcgnd_mp.py --hf-dataset-id username/dataset-name --model gpt-4o --hf-split test
+  python eval_funcregion_cap_mp.py --hf-dataset-id HongxinLi/AutoGUIv2-FuncRegionCap-v2 --model gpt-4o --hf-split test --answer-mode single
   
   # With checkpointing:
-  python eval_funcgnd_mp.py --hf-dataset-id username/dataset-name --model gpt-4o --load-latest
+  python eval_funcregion_cap_mp.py --hf-dataset-id HongxinLi/AutoGUIv2-FuncRegionCap-v2 --model gpt-4o --load-latest --answer-mode single
         """
     )
 
@@ -2571,21 +2674,25 @@ Examples:
     source_group.add_argument("--questions-file", type=str, default=None,
                               help="Path to questions JSON file (from 2_generate_func_elemgnd_questions.py) or glob pattern")
     # Default dataset ID based on task type
-    args_pre, _ = parser.parse_known_args()
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--task-type", type=str, choices=['funcgnd', 'descgnd', 'funccap', 'easy_funccap'], default='funccap')
+    args_pre, _ = pre_parser.parse_known_args()
     task_type_pre = getattr(args_pre, 'task_type', 'funccap')
     if task_type_pre == 'funccap':
-        default_dataset_id = 'HongxinLi/AutoGUIv2-FuncRegionCap'
+        default_dataset_id = 'HongxinLi/AutoGUIv2-FuncRegionCap-v2'
     elif task_type_pre == 'easy_funccap':
         default_dataset_id = None
     else:
-        default_dataset_id = 'HongxinLi/AutoGUIv2-FuncRegionGnd'
+        default_dataset_id = 'HongxinLi/AutoGUIv2-FuncRegionGnd-v2'
     source_group.add_argument("--hf-dataset-id", type=str, default=default_dataset_id, help="HuggingFace dataset ID (e.g., 'username/dataset-name')")
 
     # HuggingFace specific arguments
     parser.add_argument("--hf-split", type=str, default='test',
                        help="Dataset split to load from HuggingFace (default: 'test')")
-    parser.add_argument("--hf-cache-dir", type=str, default='/mnt/vdb1/hongxin_li/AutoGUIv2/hf_dataset_cache/FuncRegionCap/',
-                       help="Cache directory for HuggingFace datasets")
+    parser.add_argument("--hf-cache-dir", type=str, default=None,
+                       help="Optional local dataset cache directory produced by datasets.save_to_disk")
+    parser.add_argument("--answer-mode", type=str, choices=['single', 'multi', 'auto'], default='single',
+                       help="Answer format for funccap tasks. Use single for public FuncRegionCap-v2; multi for multi-answer variants; auto infers from labels.")
 
     # Model arguments
     parser.add_argument("--model", type=str, default=[
@@ -2631,7 +2738,7 @@ Examples:
     parser.add_argument("--print-samples", type=int, default=0,
                        help="Print first N normalized entries and exit (no model calls)")
     parser.add_argument("--force-multi-select", action="store_true",
-                       help="Force multi-select question format (override question from data)")
+                       help="Deprecated alias for --answer-mode multi")
     
     args, _ = parser.parse_known_args()
     
