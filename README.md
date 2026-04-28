@@ -117,58 +117,97 @@ python utils/data_utils/autoguiv2/annotate_functional_regions.py \
 
 ---
 
-### Step 2 — Generate FuncElemGnd / FuncElemCap Tasks
+### Step 2 — Correct BBox Annotations (Interactive Web UI)
+
+Raw LLM-generated bounding boxes sometimes have imprecise boundaries. Launch the interactive correction interface to review and fix them before proceeding:
 
 ```bash
-# 2a. Detect visually similar elements with different functions
-python utils/data_utils/autoguiv2/FuncElemGnd_eval_gen/1_make_func_elemgnd_samples.py \
+python utils/data_utils/autoguiv2/monitor/server_bboxcorrection_v2.py \
+    --cache-dir "./annotations/cache" \
+    --port 17800
+# Open http://localhost:17800
+```
+
+The web UI provides:
+- **Live progress tracking** — see which images are done, pending, or failed
+- **Interactive BBox editor** — drag to adjust bounding boxes directly on the screenshot
+- **Quality metrics dashboard** — completeness and boundedness scores per region
+- **Batch revision tools** — flag, skip, or trigger re-annotation for entire images
+
+<div align="center">
+<img src="assets/fig_reanno_web_ui.png" width="95%" alt="AutoGUI-v2 Mannual Correction">
+</div>
+
+---
+
+### Step 3 — Re-annotate Functionality After Fixing
+
+After bounding boxes are corrected, the functional descriptions and labels attached to those regions may be stale. Re-run the functionality annotation on the fixed regions:
+
+```bash
+python utils/data_utils/autoguiv2/reannotate_func_after_fixing.py \
     --anno-path "./annotations/functional_regions.json" \
+    --corrected-path "./annotations/cache" \
+    --output-dir "./annotations/corrected" \
+    --model "gemini-2.5-pro"
+```
+
+This regenerates only the text annotations (function descriptions, region labels) for regions whose bounding boxes changed — keeping API costs low while ensuring consistency.
+
+---
+
+### Step 4 — Generate FuncElemGnd / FuncElemCap Tasks
+
+```bash
+# 4a. Detect visually similar elements with different functions
+python utils/data_utils/autoguiv2/FuncElemGnd_eval_gen/1_make_func_elemgnd_samples.py \
+    --anno-path "./annotations/corrected/functional_regions.json" \
     --output-dir "./tasks/elemgnd"
 
-# 2b. Generate functional grounding questions
+# 4b. Generate functional grounding questions
 python utils/data_utils/autoguiv2/FuncElemGnd_eval_gen/2_generate_func_elemgnd_questions.py \
     --samples-file "./tasks/elemgnd/samples.json" \
     --output-dir "./tasks/elemgnd" \
     --model "gpt-4o"
 
-# 2c. Generate functional captioning questions (FuncElemCap)
+# 4c. Generate functional captioning questions (FuncElemCap)
 python utils/data_utils/autoguiv2/FuncElemGnd_eval_gen/3_generate_func_captioning_questions.py \
     --samples-file "./tasks/elemgnd/samples.json" \
     --output-dir "./tasks/elemcap" \
     --model "gpt-4o"
 
-# 2d. Upload to HuggingFace
+# 4d. Upload to HuggingFace
 python utils/data_utils/autoguiv2/FuncElemGnd_eval_gen/21_convert_elemgnd_to_hf_dataset.py \
     --questions-file "./tasks/elemgnd/grounding_questions.json" \
-    --repo-id "username/autoguiv2-funcelem" \
+    --repo-id "AutoGUI/AutoGUIv2-FuncElemGnd" \
     --include-images
 ```
 
 ---
 
-### Step 3 — Generate FuncRegionGnd / FuncRegionCap Tasks
+### Step 5 — Generate FuncRegionGnd / FuncRegionCap Tasks
 
 Two-stage pipeline: semantic clustering → visual verification → question generation.
 
 ```bash
 # Grounding mode: locate a region on-screen
 python utils/data_utils/autoguiv2/FuncElemQA_eval_gen/gen_region-func_multichoice-qa.py \
-    --anno-path "./annotations/functional_regions.json" \
+    --anno-path "./annotations/corrected/functional_regions.json" \
     --output-dir "./tasks/regiongnd" \
     --model "gemini-2.5-pro" \
     --mode "grounding"
 
-# QA mode: text-based multi-choice questions about region function
+# Captioning mode: multi-choice questions about region function
 python utils/data_utils/autoguiv2/FuncElemQA_eval_gen/gen_region-func_multichoice-qa.py \
-    --anno-path "./annotations/functional_regions.json" \
-    --output-dir "./tasks/regionqa" \
+    --anno-path "./annotations/corrected/functional_regions.json" \
+    --output-dir "./tasks/regioncap" \
     --model "gemini-2.5-pro" \
     --mode "qa"
 ```
 
 ---
 
-### Step 4 — Evaluate Models
+### Step 6 — Evaluate Models
 
 ```bash
 # Evaluate on FuncElemGnd
@@ -202,19 +241,6 @@ Supported models out of the box: `gpt-4o`, `gemini-*`, `claude-*`, `qwen*`, `ui-
 
 ---
 
-### Step 5 — Monitor & Revise Annotations
-
-```bash
-python utils/data_utils/autoguiv2/monitor/server_bboxcorrection_v2.py \
-    --cache-dir "./annotations/cache" \
-    --port 17800
-# Open http://localhost:17800
-```
-
-The web UI lets you inspect annotation progress in real time, correct bounding boxes interactively, and trigger re-annotation for failed cases.
-
----
-
 ## Pipeline Architecture
 
 <div align="center">
@@ -227,7 +253,7 @@ GUI Screenshots (any dataset)
          │
          ▼
 ┌─────────────────────────────────────┐
-│   Hierarchical Region Annotator     │
+│   1. Hierarchical Region Annotator  │
 │   annotate_functional_regions.py    │
 │                                     │
 │   LLM decomposes image → region     │
@@ -237,10 +263,30 @@ GUI Screenshots (any dataset)
 │   Caching + parallel processing     │
 └─────────────────────────────────────┘
          │
+         ▼
+┌─────────────────────────────────────┐
+│   2. BBox Correction (Web UI)       │
+│   monitor/server_bboxcorrection_v2  │
+│                                     │
+│   Interactive browser tool:         │
+│   • Live progress dashboard         │
+│   • Drag-to-adjust bounding boxes   │
+│   • Per-region quality metrics      │
+└─────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│   3. Re-annotation After Fixing     │
+│   reannotate_func_after_fixing.py   │
+│                                     │
+│   Regenerates functional labels &   │
+│   descriptions for corrected boxes  │
+└─────────────────────────────────────┘
+         │
     ┌────┴────┐
     ▼         ▼
 ┌──────────┐  ┌──────────────────────┐
-│ Element  │  │ Region-Level Tasks   │
+│ 4. Elem  │  │ 5. Region Tasks      │
 │  Tasks   │  │ FuncElemQA_eval_gen/ │
 │          │  │                      │
 │ 1. Find  │  │ 1. Semantic cluster  │
@@ -248,7 +294,7 @@ GUI Screenshots (any dataset)
 │  elems   │  │ 2. Visual verify     │
 │          │  │    (Gemini Vision)   │
 │ 2. Gen   │  │ 3. Gen grounding /   │
-│  gnd Qs  │  │    text-based QA     │
+│  gnd Qs  │  │    captioning QA     │
 │          │  │                      │
 │ 3. Gen   │  │ → FuncRegionGnd      │
 │  cap Qs  │  │ → FuncRegionCap      │
@@ -259,7 +305,7 @@ GUI Screenshots (any dataset)
          │
          ▼
 ┌─────────────────────────────────────┐
-│   Model Evaluation                  │
+│   6. Model Evaluation               │
 │   eval_utils/autoguiv2/             │
 │   • Center Acc / IoU metrics        │
 │   • Multi-benchmark support         │
