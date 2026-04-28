@@ -5,6 +5,7 @@ A sophisticated tool for automatically annotating functional regions in GUI scre
 ## 🎯 Overview
 
 This script processes GUI screenshots and identifies functional regions (buttons, text fields, menus, etc.) by:
+
 1. **Hierarchical Decomposition**: Recursively breaking down complex UIs into smaller, manageable components
 2. **Quality Verification**: Using separate LLMs to validate region completeness and boundedness
 3. **Intelligent Refinement**: Automatically retrying with improved prompts when quality thresholds aren't met
@@ -65,15 +66,16 @@ Quality Meets Criteria?
 ### Key Components
 
 1. **FunctionalRegionAnnotator**: Main annotation engine
+
    - `model`: Primary LLM for region identification
    - `checking_model`: Secondary LLM for quality verification
-   
-2. **Hierarchical Processing**: 
+2. **Hierarchical Processing**:
+
    - Level 0: Root image
    - Level 1+: Child regions
    - Configurable maximum depth
-
 3. **Quality Metrics**:
+
    - **Completeness**: Does region contain all necessary elements?
    - **Boundedness**: Is region properly bounded without excess background?
 
@@ -113,21 +115,25 @@ python annotate_functional_regions.py \
 ### Optional Arguments
 
 #### Model Configuration
+
 - `--checking-model`: Separate model for quality checking (defaults to primary model)
 - `--base-url`: Custom API endpoint
 - `--api-key`: API key (or use environment variable)
 
 #### Processing Control
+
 - `--workers`: Number of parallel workers (default: 1)
 - `--max-level`: Maximum hierarchy depth (-1 for unlimited, default: 3)
 - `--max-refine`: Maximum refinement attempts (default: 3)
 - `--max-retries`: Maximum API retry attempts (default: 3)
 
 #### Quality Thresholds
+
 - `--completeness-threshold`: Minimum completeness score (0-3, default: 2.5)
 - `--boundedness-threshold`: Minimum boundedness ratio (default: 0.8)
 
 #### Output & Debugging
+
 - `--output-dir`: Output directory
 - `--debug`: Enable detailed logging
 - `--debug-draw`: Generate debug visualization images
@@ -198,10 +204,12 @@ output/
 ## 🔧 How It Works
 
 ### 1. Image Loading & Preprocessing
+
 - Load image from local path or cloud storage
 - Resize if exceeds maximum dimensions
 - Convert to appropriate format for LLM input
 
 ### 2. Hierarchical Decomposition
+
 - **Root Analysis**: Process entire image to identify major functional areas
 - **Child Generation**: For each region, recursively identify sub-components
