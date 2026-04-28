@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
+"""Compute word statistics for question + option_context fields in captioning_mode result files."""
+
+import argparse
 import glob
 import json
 import os
 import re
 from typing import Iterable, List
 
-TARGET_DIRS: List[str] = [
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/osworld_g/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/screenspot_pro/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/agentnet/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/amex/FuncRegion/captioning_mode",
-]
-
 WORD_PATTERN = re.compile(r"\b[\w'-]+\b", re.UNICODE)
 
 
-def iter_result_files() -> Iterable[str]:
-    for directory in TARGET_DIRS:
+def iter_result_files(directories: Iterable[str]) -> Iterable[str]:
+    for directory in directories:
+        if not os.path.isdir(directory):
+            continue
         pattern = os.path.join(directory, "**", "*_result.json")
         for path in glob.glob(pattern, recursive=True):
             yield path
@@ -52,10 +50,20 @@ def extract_option_contexts(question: dict) -> List[str]:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Compute word statistics for question + option_context fields in captioning_mode result files."
+    )
+    parser.add_argument(
+        "directories",
+        nargs="+",
+        help="Captioning-mode result directories to scan recursively (e.g. ./tasks/region/captioning_mode).",
+    )
+    args = parser.parse_args()
+
     total_words = 0
     total_questions = 0
 
-    for file_path in iter_result_files():
+    for file_path in iter_result_files(args.directories):
         try:
             with open(file_path, "r", encoding="utf-8") as file:
                 data = json.load(file)

@@ -21,14 +21,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-RESULT_DIRS: Sequence[Path] = (
-    Path("/mnt/vdb1/hongxin_li/AutoGUIv2/agentnet/FuncRegion/captioning_mode"),
-    Path("/mnt/vdb1/hongxin_li/AutoGUIv2/amex/FuncRegion/captioning_mode"),
-    Path("/mnt/vdb1/hongxin_li/AutoGUIv2/osworld_g/FuncRegion/captioning_mode"),
-    Path("/mnt/vdb1/hongxin_li/AutoGUIv2/screenspot_pro/FuncRegion/captioning_mode"),
-)
-
-CACHE_ROOT = Path("/mnt/vdb1/hongxin_li/AutoGUIv2/cache")
 
 
 def iter_result_files(directories: Sequence[Path]) -> Iterable[Path]:
@@ -251,6 +243,19 @@ def build_entry(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Construct functionality dataset with distractor options.")
     parser.add_argument(
+        "--result-dirs",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="Captioning-mode result directories to scan (e.g. ./tasks/region/captioning_mode).",
+    )
+    parser.add_argument(
+        "--cache-root",
+        type=Path,
+        required=True,
+        help="Cache root that contains <dataset>/<model>/<image_id>/ subtrees with reannotated nodes.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         required=True,
@@ -285,7 +290,7 @@ def main() -> None:
     nodes_cache: Dict[Tuple[str, str, str], Optional[Path]] = {}
     bbox_cache: Dict[Path, Optional[Tuple[int, int, int, int]]] = {}
 
-    for result_path in iter_result_files(RESULT_DIRS):
+    for result_path in iter_result_files(args.result_dirs):
         try:
             result_json = load_json(result_path)
         except json.JSONDecodeError as exc:
@@ -329,7 +334,7 @@ def main() -> None:
 
             cache_key = (dataset_name, model_name or "", image_id)
             if cache_key not in nodes_cache:
-                nodes_cache[cache_key] = find_nodes_dir(dataset_name, model_name, image_id, CACHE_ROOT)
+                nodes_cache[cache_key] = find_nodes_dir(dataset_name, model_name, image_id, args.cache_root)
 
             nodes_dir = nodes_cache[cache_key]
             if not nodes_dir:

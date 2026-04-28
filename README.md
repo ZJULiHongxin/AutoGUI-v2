@@ -7,8 +7,8 @@
 [![Paper](https://img.shields.io/badge/Paper-AutoGUIv2-blue?logo=adobeacrobatreader)](https://arxiv.org/abs/2604.24441)
 [![Project Page](https://img.shields.io/badge/Project-Page-green?logo=github)](https://ZJULiHongxin.github.io/AutoGUI-v2)
 [![FuncElemGnd](https://img.shields.io/badge/🤗_FuncElemGnd-Dataset-yellow)](https://huggingface.co/datasets/AutoGUI/AutoGUIv2-FuncElemGnd)
-[![FuncRegionGnd](https://img.shields.io/badge/🤗_FuncRegionGnd-Dataset-yellow)](https://huggingface.co/datasets/AutoGUI/AutoGUIv2-FuncRegionGnd)
-[![FuncRegionCap](https://img.shields.io/badge/🤗_FuncRegionCap-Dataset-yellow)](https://huggingface.co/datasets/AutoGUI/AutoGUIv2-FuncRegionCap)
+[![FuncRegionGnd](https://img.shields.io/badge/🤗_FuncRegionGnd-Dataset-yellow)](https://huggingface.co/datasets/HongxinLi/AutoGUIv2-FuncRegionGnd-v2)
+[![FuncRegionCap](https://img.shields.io/badge/🤗_FuncRegionCap-Dataset-yellow)](https://huggingface.co/datasets/HongxinLi/AutoGUIv2-FuncRegionCap-v2)
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8+-blue?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
@@ -191,18 +191,26 @@ Two-stage pipeline: semantic clustering → visual verification → question gen
 
 ```bash
 # Grounding mode: locate a region on-screen
-python utils/data_utils/autoguiv2/FuncElemQA_eval_gen/gen_region-func_multichoice-qa.py \
-    --anno-path "./annotations/corrected/functional_regions.json" \
+python utils/data_utils/autoguiv2/FuncElemQA_eval_gen/gen_region-func_multichoice-qa_easy.py \
+    --input-file "./annotations/corrected/functional_regions.json" \
     --output-dir "./tasks/regiongnd" \
-    --model "gemini-2.5-pro" \
-    --mode "grounding"
+    --generation-mode "grounding_mode" \
+    --cache-dir "./cache" \
+    --model "gemini-2.5-pro-thinking"
 
 # Captioning mode: multi-choice questions about region function
-python utils/data_utils/autoguiv2/FuncElemQA_eval_gen/gen_region-func_multichoice-qa.py \
-    --anno-path "./annotations/corrected/functional_regions.json" \
-    --output-dir "./tasks/regioncap" \
-    --model "gemini-2.5-pro" \
-    --mode "qa"
+python utils/data_utils/autoguiv2/FuncElemQA_eval_gen/gen_region-func_multichoice-qa_easy.py \
+    --input-file "./annotations/corrected/functional_regions.json" \
+    --output-dir "./tasks/regioncap/captioning_mode" \
+    --generation-mode "captioning_mode" \
+    --cache-dir "./cache" \
+    --model "gemini-2.5-pro-thinking"
+
+python utils/data_utils/autoguiv2/FuncElemQA_eval_gen/gen_region-func_multichoice-qa_hard.py \
+    --source-dirs "./tasks/regioncap/captioning_mode" \
+    --output-file "./tasks/regioncap/func_region_cap_hard.json" \
+    --answer-mode "single" \
+    --model "gemini-2.5-pro-thinking"
 ```
 
 ---
@@ -216,6 +224,16 @@ python utils/eval_utils/autoguiv2/eval_elemgnd_mp.py \
     --dataset-path "./tasks/elemgnd/dataset" \
     --output-dir "./results" \
     --workers 8
+
+# Evaluate on FuncRegionGnd
+python utils/eval_utils/autoguiv2/eval_funcregion_gnd_mp.py \
+    --hf-dataset-id "HongxinLi/AutoGUIv2-FuncRegionGnd-v2" \
+    --model "gpt-4o"
+
+# Evaluate on FuncRegionCap
+python utils/eval_utils/autoguiv2/eval_funcregion_cap_mp.py \
+    --hf-dataset-id "HongxinLi/AutoGUIv2-FuncRegionCap-v2" \
+    --model "gpt-4o"
 
 # Evaluate on ScreenSpot-v2
 python utils/eval_utils/autoguiv2/eval_screenspotv2_mp.py \
@@ -340,7 +358,10 @@ AutoGUI-v2/
     │       │   └── 4_calc_task_attributes.py
     │       │
     │       ├── FuncElemQA_eval_gen/            ← Region-level task gen
-    │       │   └── gen_region-func_multichoice-qa.py
+    │       │   ├── gen_region-func_multichoice-qa_easy.py
+    │       │   ├── gen_region-func_multichoice-qa_hard.py
+    │       │   ├── convert_regcap_to_hf_dataset.py
+    │       │   └── convert_reggnd_to_hf_dataset.py
     │       │
     │       ├── monitor/                        ← Annotation web UI
     │       │   ├── server_bboxcorrection_v2.py
@@ -355,10 +376,13 @@ AutoGUI-v2/
     └── eval_utils/
         └── autoguiv2/
             ├── eval_elemgnd_mp.py
+            ├── eval_funcregion_gnd_mp.py            ← FuncRegionGnd evaluator
+            ├── eval_funcregion_cap_mp.py            ← FuncRegionCap evaluator
             ├── eval_screenspotv2_mp.py
             ├── eval_osworldg_mp.py
             ├── eval_mind2web_mp.py
             ├── eval_androidcontrol_mp.py
+            ├── tools/                                ← Region-level dataset & stat tools
             └── vis_utils/
 ```
 

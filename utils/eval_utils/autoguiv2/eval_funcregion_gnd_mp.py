@@ -1,8 +1,8 @@
 """
-Evaluate VLMs on Functional Region Captioning (Funccap) tasks
+Evaluate VLMs on Functional Region Grounding tasks
 
-This script evaluates vision-language models on functional REGION captioning,
-where models need to identify the functionality of circled UI elements from multiple choice options.
+This script evaluates vision-language models on functional REGION grounding,
+where models need to locate GUI regions based on natural language queries.
 """
 
 import os
@@ -17,11 +17,18 @@ import hashlib
 import tempfile
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Literal
 from multiprocessing import Pool, Manager
 from functools import partial
 from PIL import Image
 from tqdm import tqdm
+
+# Add project root to sys.path before importing project modules
+import sys
+# __file__ = <repo_root>/utils/eval_utils/autoguiv2/eval_funcregion_gnd_mp.py
+# Need to go up 4 levels to reach the repository root.
+sys.path.append('/'.join(__file__.split('/')[:-4]))
+
 from utils.data_utils.misc import pred_2_point, get_image_dimensions, resize_pil_image
 from utils.eval_utils.autoguiv2.misc import adjust_bbox
 
@@ -64,20 +71,40 @@ except ImportError:
     HF_AVAILABLE = False
     debug_print("⚠️  datasets library not available. HuggingFace dataset loading disabled.", level="warn")
 
-import sys
-sys.path.append('/'.join(__file__.split('/')[:-4]))
 from utils.openai_utils.openai import OpenAIModel
 from utils.openai_utils.qwen3vl import Qwen3VL
-from utils.openai_utils.doubao import DOUBAO
-from utils.openai_utils.stepfun import STEPFUN
-from utils.openai_utils.parasail import PARASAIL
 from utils.openai_utils.huggingface import HFEndpoint
+
+# Optional imports for models that may have missing dependencies
+try:
+    from utils.openai_utils.doubao import DOUBAO
+except ImportError:
+    DOUBAO = None
+    debug_print("⚠️  DOUBAO not available (missing volcenginesdkarkruntime)", level="warn")
+
+try:
+    from utils.openai_utils.stepfun import STEPFUN
+except ImportError:
+    STEPFUN = None
+    debug_print("⚠️  STEPFUN not available", level="warn")
+
+try:
+    from utils.openai_utils.parasail import PARASAIL
+except ImportError:
+    PARASAIL = None
+    debug_print("⚠️  PARASAIL not available", level="warn")
+
+try:
+    from utils.openai_utils.jedi import JEDI
+except ImportError:
+    JEDI = None
+    debug_print("⚠️  JEDI not available", level="warn")
 try:
     # For region type → 6-bucket mapping
-    repo_root = "/mnt/nvme0n1p1/hongxin_li/highres_autogui"
-    if repo_root not in sys.path:
-        sys.path.append(repo_root)
-    from utils.data_utils.autoguiv2.FuncElemQA_eval_gen.eval.count_region_types import resolve_parent_category  # type: ignore
+    try:
+        from tools.count_region_types import resolve_parent_category  # type: ignore
+    except Exception:
+        from utils.eval_utils.autoguiv2.tools.count_region_types import resolve_parent_category  # type: ignore
 except Exception:
     def resolve_parent_category(leaf_type: str) -> str:
         return "Others"
@@ -94,21 +121,41 @@ REF_PLACEHOLDER = {
     'intentgnd': 'Action Intent'
 }
 
+# Normalize terminology in text fields
+_ELEMENT_PATTERN = re.compile(r'\b(?:element|Element|elements|Elements)\b')
+
+def replace_element_with_region(text: Optional[str]) -> Optional[str]:
+    """Replace occurrences of 'element(s)' with 'region(s)' preserving capitalization."""
+    if not text:
+        return text
+
+    def _repl(match: re.Match) -> str:
+        token = match.group(0)
+        replacements = {
+            'element': 'region',
+            'Element': 'Region',
+            'elements': 'regions',
+            'Elements': 'Regions',
+        }
+        return replacements.get(token, token)
+
+    return _ELEMENT_PATTERN.sub(_repl, text)
+
 # Grounding prompt template
-GEMINI_GROUNDING_PROMPT = """You are a GUI expert. Given a screenshot and {ref_tag} a specific UI element, you need to identify the bounding box of the target element, which should be [ymin, xmin, ymax, xmax] normalized to 0-1000. Note that the X-axis runs horizontally from left (0) to right (999), and the Y-axis runs vertically from top (0) to bottom (999).
+GEMINI_GROUNDING_PROMPT = """You are a GUI expert. Given a screenshot and {ref_tag} a specific UI region, you need to identify the bounding box of the target region, which should be [ymin, xmin, ymax, xmax] normalized to 0-1000. Note that the X-axis runs horizontally from left (0) to right (999), and the Y-axis runs vertically from top (0) to bottom (999).
 
 {ref_placeholder}: {question}
 
 Now analyze the screenshot and provide the bounding box for the target element:"""
 
-CLAUDE_GROUNDING_PROMPT = """You are a GUI expert. Given a screenshot and {ref_tag} a specific UI element, you need to identify the bounding box of the target element, which should be [xmin, ymin, xmax, ymax]. Note that the X-axis runs horizontally from left (0) to right (999), and the Y-axis runs vertically from top (0) to bottom (999).
+CLAUDE_GROUNDING_PROMPT = """You are a GUI expert. Given a screenshot and {ref_tag} a specific UI region, you need to identify the bounding box of the target region, which should be [xmin, ymin, xmax, ymax]. Note that the X-axis runs horizontally from left (0) to right (999), and the Y-axis runs vertically from top (0) to bottom (999).
 
 {ref_placeholder}: {question}
 
 Output format:
 Box: [xmin, ymin, xmax, ymax]
 
-Now analyze the screenshot and provide the bounding box for the target element:"""
+Now analyze the screenshot and provide the bounding box for the target region:"""
 
 # UI-Tars (https://github.com/bytedance/UI-TARS/blob/main/codes/ui_tars/prompt.py)
 UI_TARS_PROMPT = """You are a GUI agent. You are given a task and your action history, with screenshots. You need to perform the next action to complete the task.
@@ -125,29 +172,81 @@ click(point='<point>x1 y1</point>'')
 {question}"""
 
 # OS-ATLAS
-OSATLAS_PROMPT = 'In this UI screenshot, what is the position of the element corresponding to the command "{question}" (with bbox)?'
+OSATLAS_PROMPT = 'In this UI screenshot, what is the position of the region corresponding to the command "{question}" (with bbox)?'
+
+# OpenCUA System Prompt
+OPENCUA_SYSPROMPT = (
+    "You are a GUI agent. You are given a task and a screenshot of the screen. "
+    "You need to perform a series of pyautogui actions to complete the task."
+)
+
+# OpenCUA Bbox Prompt (absolute pixel coordinates, for funcgnd)
+OPENCUA_BBOX_PROMPT = """You are a GUI expert. Given a screenshot and {ref_tag} a specific UI region, you need to identify the bounding box of the target region, which should be [xmin, ymin, xmax, ymax] in absolute pixel coordinates. Note that the X-axis runs horizontally from left to right, and the Y-axis runs vertically from top to bottom.
+
+{ref_placeholder}: {question}"""
+
+# UGround Prompt
+UGROUND_PROMPT = """Your task is to help the user identify the precise coordinates (x, y) of a specific region on the screen based on a description.
+
+- Your response should point to the center or a representative point within the described region as accurately as possible.
+- If the description is unclear or ambiguous, infer the most relevant region based on its likely context or purpose.
+- Return a single pair of coordinates (x, y). Prefer normalized coordinates in [0, 1000).
+
+Description: {instruction}
+
+Answer:"""
+
+# JEDI Prompt
+JEDI_PROMPT = "Please complete the following tasks via mouse click or wait: {instruction}"
+
+# HOLO Prompt
+try:
+    from pydantic import BaseModel, Field
+    class ClickAbsoluteAction(BaseModel):
+        """Click at absolute coordinates."""
+        action: Literal["click_absolute"] = "click_absolute"
+        x: int = Field(description="The x coordinate, number of pixels from the left edge.")
+        y: int = Field(description="The y coordinate, number of pixels from the top edge.")
+    
+    HOLO_PROMPT = f"""Localize a region on the GUI image according to the provided target and output a click position.
+         * You must output a valid JSON following the format: {ClickAbsoluteAction.model_json_schema()}"""
+except:
+    HOLO_PROMPT = """Localize a region on the GUI image according to the provided target and output a click position.
+         * You must output a valid JSON with format: {{"action": "click_absolute", "x": <int>, "y": <int>}}"""
+
+HOLO_BBOX_PROMPT = """You are a GUI expert. Given a screenshot and {ref_tag} a specific UI region, you need to identify the bounding box of the target region, which should be [xmin, ymin, xmax, ymax]. Note that the X-axis runs horizontally from left to right, and the Y-axis runs vertically from top to bottom.
+
+{ref_placeholder}: {question}"""
+
+# InfiGUI-G1
+INFIGUIG1_SYSPROMPT = 'You FIRST think about the reasoning process as an internal monologue and then provide the final answer.\nThe reasoning process MUST BE enclosed within <think> </think> tags.'
+INFIGUIG1_PROMPT = '''The screen's resolution is {new_width}x{new_height}.
+Locate the UI region(s) for "{instruction}", output the coordinates using JSON format: [{{"point_2d": [x, y]}}, ...]
+Note: Output absolute pixel coordinates based on the screen resolution.'''
+
+# GUI-R1 (absolute pixel coordinates; image_first=True)
+GUIR1_PROMPT = (
+    "You are RUN1-R1, a reasoning GUI Agent Assistant. In this UI screenshot <image>, I want you to continue executing the command '{instruction}', with the action history being 'None'.\n"
+    "Please provide the action to perform (enumerate from ['click']), the point where the cursor is moved to (integer) if a click is performed, and any input text required to complete the action.\n"
+    "Output the thinking process in <think> </think> tags, and the final answer in <answer> </answer> tags as follows:\n"
+    "<think> ... </think> <answer>[{{'action': enum['click'], 'point': [x, y], 'input_text': 'no input text [default]'}}]</answer>\n"
+    "Example:\n"
+    "[{{'action': enum['click'], 'point': [123, 300], 'input_text': 'no input text'}}]\n"
+)
+
+# UI-Venus (outputs bbox [x1,y1,x2,y2] in absolute pixel coordinates)
+UIVENUS_PROMPT = "Outline the position corresponding to the instruction: {instruction}. The output should be only [x1,y1,x2,y2]."
 
 # GENERIC_PROMPT
-GENERIC_PROMPT = """You are a GUI expert. Given a screenshot and {ref_tag} a specific UI element, you need to identify the bounding box of the target element, which should be [xmin, ymin, xmax, ymax] normalized to 0-1000. Note that the X-axis runs horizontally from left (0) to right (999), and the Y-axis runs vertically from top (0) to bottom (999).
+GENERIC_PROMPT = """You are a GUI expert. Given a screenshot and {ref_tag} a specific UI region, you need to identify the bounding box of the target region, which should be [xmin, ymin, xmax, ymax] normalized to 0-1000. Note that the X-axis runs horizontally from left (0) to right (999), and the Y-axis runs vertically from top (0) to bottom (999).
 
 {ref_placeholder}: {question}
 
 Output format:
 Box: [xmin, ymin, xmax, ymax]
 
-Now analyze the screenshot and provide the bounding box for the target element:"""
-
-# Multiple choice prompt for funccap task
-FUNCCAP_PROMPT = """You are a GUI expert. Given an image with a circled UI region, you need to identify the functionality of that region.
-
-Question: Which option most accurately describes the functionality of the region marked with a red rectangle?
-
-Options:
-{options}
-
-Please select the correct answer by providing only the option letter (A, B, C, D, etc.). Return just the letter corresponding to one of the provided options."""
-
-FUNCCAP_DEFAULT_QUESTION = "Which option most accurately describes the functionality of the region marked with a red rectangle?"
+**IMPORTANT:** The output bbox must be tight and complete.
+Now analyze the screenshot and provide the bounding box for the target region:"""
 
 
 def _normalize_bbox_0_1(box: List[float]) -> List[float]:
@@ -209,7 +308,7 @@ def calculate_iou(bbox1: List[float], bbox2: List[float]) -> float:
     return intersection / union
 
 def load_dataset_from_json(questions_file: str) -> List[Dict[str, Any]]:
-    """Load dataset from questions JSON file (supports both caption & legacy formats)
+    """Load dataset from questions JSON file
     
     Args:
         questions_file: Path to questions JSON file or glob pattern
@@ -224,163 +323,32 @@ def load_dataset_from_json(questions_file: str) -> List[Dict[str, Any]]:
     else:
         questions_files = [questions_file]
 
-    all_entries: List[Dict[str, Any]] = []
+    all_entries = []
 
-    def _resolve_image_path(candidate: str, base_dirs: List[str]) -> Optional[str]:
-        if not candidate:
-            return None
-        if os.path.isabs(candidate) and os.path.exists(candidate):
-            return candidate
-        for base in base_dirs:
-            if not base:
-                continue
-            trial = os.path.join(base, candidate)
-            if os.path.exists(trial):
-                return trial
-        return None
+    for file in questions_files:
+        if not os.path.exists(file):
+            debug_print(f"⚠️  File not found: {file}", level="warn")
+            continue
 
-    def _load_caption_format(file_path: str, payload: Any, attr_data: Dict[str, Any]) -> None:
-        nonlocal all_entries
-
-        if isinstance(payload, dict):
-            if 'result' in payload and isinstance(payload['result'], dict):
-                questions = payload['result'].get('questions', [])
-            else:
-                questions = payload.get('questions', []) or payload.get('entries', [])
-            dataset_name = payload.get('metadata', {}).get('dataset_name')
-        elif isinstance(payload, list):
-            questions = payload
-            dataset_name = None
-        else:
-            questions = []
-            dataset_name = None
-
-        if not dataset_name:
-            dataset_name = file_path.split('/')[-3] if len(file_path.split('/')) >= 3 else 'unknown'
-
-        if not questions:
-            debug_print(f"⚠️  No caption questions found in {file_path}", level="warn")
-            return
-
-        file_dir = os.path.dirname(file_path)
-        parent_dir = os.path.dirname(file_dir)
-        candidate_dirs = [
-            file_dir,
-            os.path.join(file_dir, 'images'),
-            os.path.join(file_dir, 'annotated_images'),
-            parent_dir,
-            os.path.join(parent_dir, 'images'),
-            os.path.join(parent_dir, 'annotated_images'),
-        ]
-
-        for q_data in questions:
-            if not isinstance(q_data, dict):
-                continue
-
-            options = q_data.get('options', [])
-            if not options:
-                continue
-
-            option_labels = [str(opt.get('label', '')).strip() for opt in options]
-            option_functionalities = []
-            option_region_types = []
-            option_area_classes = []
-            option_density_classes = []
-
-            for opt in options:
-                functionality = opt.get('option_context') or opt.get('functionality') or opt.get('description') or ''
-                option_functionalities.append(functionality)
-
-                metrics = opt.get('metrics') or {}
-                area_info = metrics.get('area') or {}
-                density_info = metrics.get('density') or {}
-
-                option_region_types.append(opt.get('region_type', ''))
-                option_area_classes.append(area_info.get('area_class') or opt.get('area_class') or None)
-                option_density_classes.append(density_info.get('density_class') or opt.get('density_class') or 'unknown')
-
-            correct_option_idx = q_data.get('correct_option_idx')
-            correct_answer_label = q_data.get('correct_answer', '')
-
-            if isinstance(correct_option_idx, str) and correct_option_idx.isdigit():
-                correct_option_idx = int(correct_option_idx)
-
-            if not isinstance(correct_option_idx, int):
-                correct_option_idx = -1
-                for idx, label in enumerate(option_labels):
-                    if label and correct_answer_label and label.strip().lower() == str(correct_answer_label).strip().lower():
-                        correct_option_idx = idx
-                        break
-
-            if correct_option_idx < 0 or correct_option_idx >= len(options):
-                debug_print(f"⚠️  Unable to determine correct option for entry in {file_path}", level="warn")
-                continue
-
-            annotated_image_path = q_data.get('annotated_image_path') or q_data.get('image_path') or ''
-            image_path = _resolve_image_path(annotated_image_path, candidate_dirs)
-
-            if not image_path:
-                debug_print(f"⚠️  Annotated image not found for question in {file_path}", level="warn")
-                continue
-
-            image_name = os.path.basename(image_path)
-            group_id = q_data.get('group_id', q_data.get('group_index', -1))
-            target_region_id = q_data.get('target_region_id', '')
-            density_class = 'unknown'
-            area_class = None
-            region_type = ''
-
-            if correct_option_idx < len(option_density_classes):
-                density_class = option_density_classes[correct_option_idx] or 'unknown'
-            if correct_option_idx < len(option_area_classes):
-                area_class = option_area_classes[correct_option_idx]
-            if correct_option_idx < len(option_region_types):
-                region_type = option_region_types[correct_option_idx] or ''
-
-            if attr_data and image_name in attr_data:
-                attr_entry = attr_data.get(image_name, {})
-                region_key = str(target_region_id) if target_region_id is not None else ''
-                if isinstance(attr_entry, dict):
-                    if region_key in attr_entry and isinstance(attr_entry[region_key], dict):
-                        density_class = attr_entry[region_key].get('density_class', density_class)
-                    else:
-                        for sub_entry in attr_entry.values():
-                            if isinstance(sub_entry, dict) and region_key in sub_entry and isinstance(sub_entry[region_key], dict):
-                                density_class = sub_entry[region_key].get('density_class', density_class)
-                                break
-
-            region_parent = resolve_parent_category(str(region_type))
-            question_text = q_data.get('question', '')
-            if not question_text:
-                question_text = FUNCCAP_DEFAULT_QUESTION
-            num_similar_elements = len(options)
-
-            entry = {
-                'entry_id': f"{image_name}_{group_id}_{target_region_id}_{uuid.uuid4().hex[:8]}",
-                'image_path': image_path,
-                'image_name': image_name,
-                'dataset_name': dataset_name,
-                'question': question_text,
-                'options': option_functionalities,
-                'correct_option_idx': correct_option_idx,
-                'correct_answer': option_functionalities[correct_option_idx] if correct_option_idx < len(option_functionalities) else '',
-                'group_index': group_id,
-                'target_elem_id': target_region_id,
-                'density_class': density_class or 'unknown',
-                'num_similar_elements': num_similar_elements,
-                'region_type': region_type,
-                'region_parent': region_parent,
-                'area_class': area_class,
-            }
-            all_entries.append(entry)
-
-    def _load_legacy_format(file_path: str, payload: Dict[str, Any], attr_data: Dict[str, Any]) -> None:
-        nonlocal all_entries
-
-        results = payload.get('results', {})
-        dataset_name = file_path.split('/')[-3] if len(file_path.split('/')) >= 3 else 'unknown'
-        image_src_dir = os.path.join(os.path.dirname(os.path.dirname(file_path)), 'images')
-
+        with open(file, 'r', encoding='utf-8') as f:
+            checkpoint = json.load(f)
+        
+        results = checkpoint.get('results', {})
+        dataset_name = file.split('/')[-3] if len(file.split('/')) >= 3 else 'unknown'
+        
+        # Infer image_src_dir
+        image_src_dir = os.path.join(os.path.dirname(os.path.dirname(file)), 'images')
+        
+        # Try to load attributes file
+        attr_file = file.replace(".json", "_attributes.json")
+        attr_data = {}
+        if os.path.exists(attr_file):
+            try:
+                with open(attr_file, 'r', encoding='utf-8') as f:
+                    attr_data = json.load(f)
+            except Exception:
+                pass
+        
         for image_name, image_data in results.items():
             if 'error' in image_data:
                 continue
@@ -409,17 +377,21 @@ def load_dataset_from_json(questions_file: str) -> List[Dict[str, Any]]:
                     if not target_bbox or len(target_bbox) != 4:
                         continue
                     
+                    # Get density class from attributes if available
                     group_index = group_data.get('group_index', -1)
                     density_class = 'unknown'
                     if image_name in attr_data and str(group_index) in attr_data[image_name] and str(target_elem_id) in attr_data[image_name][str(group_index)]:
                         density_class = attr_data[image_name][str(group_index)][str(target_elem_id)].get('density_class', 'unknown')
                     
+                    # Build a single entry per question (region task: no action_type)
                     for _, action_data in referring_expressions.items():
                         if not isinstance(action_data, dict):
                             continue
                         question = action_data.get('question', '')
                         if not question:
                             continue
+                        question = replace_element_with_region(question)
+                        # Try best-effort region_type retrieval
                         region_type = (
                             q_data.get('region_type') or
                             target_element.get('region_type') or
@@ -441,152 +413,8 @@ def load_dataset_from_json(questions_file: str) -> List[Dict[str, Any]]:
                             'region_parent': region_parent,
                         }
                         all_entries.append(entry)
-
-    for file in questions_files:
-        if not os.path.exists(file):
-            debug_print(f"⚠️  File not found: {file}", level="warn")
-            continue
-
-        with open(file, 'r', encoding='utf-8') as f:
-            payload = json.load(f)
-
-        attr_file = file.replace(".json", "_attributes.json")
-        attr_data: Dict[str, Any] = {}
-        if os.path.exists(attr_file):
-            try:
-                with open(attr_file, 'r', encoding='utf-8') as f:
-                    attr_data = json.load(f)
-            except Exception:
-                attr_data = {}
-
-        if isinstance(payload, dict) and 'results' in payload:
-            _load_legacy_format(file, payload, attr_data)
-        else:
-            _load_caption_format(file, payload, attr_data)
     
     debug_print(f"✅ Loaded {len(all_entries)} entries from JSON", level="success")
-    return all_entries
-
-
-def load_easy_funccap_dataset(questions_file: str) -> List[Dict[str, Any]]:
-    """Load Easy Funccap dataset from simplified JSON format.
-
-    The dataset contains pre-annotated options and annotated image paths.
-    """
-    debug_print(f"\n📂 Loading Easy Funccap dataset: {questions_file}", level="step")
-
-    if not questions_file:
-        debug_print("❌ Easy Funccap requires a questions file path", level="error")
-        return []
-
-    if not os.path.exists(questions_file):
-        debug_print(f"❌ Easy Funccap file not found: {questions_file}", level="error")
-        return []
-
-    with open(questions_file, "r", encoding="utf-8") as f:
-        payload = json.load(f)
-
-    entries_data = payload.get("entries", [])
-    if not entries_data:
-        debug_print(f"⚠️  No entries in Easy Funccap dataset: {questions_file}", level="warn")
-        return []
-
-    dataset_dir = os.path.dirname(os.path.abspath(questions_file))
-    repo_dir = globals().get('repo_root')
-    image_cache: Dict[str, Optional[str]] = {}
-
-    def _resolve_image_path(path_str: str) -> Optional[str]:
-        if not path_str:
-            return None
-        if path_str in image_cache:
-            return image_cache[path_str]
-
-        candidate = os.path.expanduser(path_str)
-        resolved: Optional[str] = None
-        if candidate and os.path.exists(candidate):
-            resolved = candidate
-        else:
-            basename = os.path.basename(candidate)
-            search_dirs = [
-                dataset_dir,
-                os.path.join(dataset_dir, "images"),
-                os.path.join(dataset_dir, "annotated_images"),
-            ]
-            if repo_dir:
-                search_dirs.extend([
-                    os.path.join(repo_dir, "utils", "data_utils", "autoguiv2"),
-                    os.path.join(repo_dir, "testdata"),
-                ])
-            for base in search_dirs:
-                if not base:
-                    continue
-                trial = os.path.join(base, basename)
-                if os.path.exists(trial):
-                    resolved = trial
-                    break
-
-        if not resolved:
-            debug_print(f"⚠️  Easy Funccap image not found: {path_str}", level="warn")
-
-        image_cache[path_str] = resolved
-        return resolved
-
-    all_entries: List[Dict[str, Any]] = []
-    for idx, entry in enumerate(entries_data):
-        annotated_image_path = entry.get("annotated_image_path", "")
-        options = entry.get("options", [])
-        correct_index = entry.get("correct_index", -1)
-
-        if not isinstance(options, list) or not options:
-            debug_print(f"⚠️  Skipping entry {idx}: missing options", level="warn")
-            continue
-
-        if isinstance(correct_index, str) and correct_index.isdigit():
-            correct_index = int(correct_index)
-
-        if not isinstance(correct_index, int) or not (0 <= correct_index < len(options)):
-            debug_print(f"⚠️  Skipping entry {idx}: invalid correct_index {correct_index}", level="warn")
-            continue
-
-        image_path = _resolve_image_path(annotated_image_path)
-        if not image_path:
-            debug_print(f"⚠️  Skipping entry {idx}: image not found", level="warn")
-            continue
-
-        image_name = os.path.basename(image_path)
-        target_region_id = entry.get("target_region_id", "")
-        target_region_type = entry.get("target_region_type", "") or ""
-        region_parent = resolve_parent_category(str(target_region_type))
-        option_region_ids = entry.get("option_region_ids", [])
-        group_match = re.search(r"group(\d+)", os.path.splitext(os.path.basename(annotated_image_path))[0])
-        group_index = int(group_match.group(1)) if group_match else -1
-
-        dataset_name = payload.get("metadata", {}).get("dataset_name") if isinstance(payload.get("metadata"), dict) else None
-        if not dataset_name:
-            dataset_name = payload.get("dataset_name", "easy_funccap")
-
-        easy_entry = {
-            "entry_id": f"easy_{idx:05d}_{image_name}_{target_region_id}",
-            "image_path": image_path,
-            "image_name": image_name,
-            "dataset_name": dataset_name,
-            "question": FUNCCAP_DEFAULT_QUESTION,
-            "options": options,
-            "correct_option_idx": correct_index,
-            "correct_answer": options[correct_index],
-            "group_index": group_index,
-            "target_elem_id": target_region_id,
-            "density_class": "unknown",
-            "num_similar_elements": len(options),
-            "region_type": target_region_type,
-            "region_parent": region_parent,
-            "area_class": None,
-            "option_region_ids": option_region_ids,
-            "source_annotated_image_path": annotated_image_path,
-        }
-        all_entries.append(easy_entry)
-
-    debug_print(f"✅ Loaded {len(all_entries)} Easy Funccap entries", level="success")
     return all_entries
 
 
@@ -602,10 +430,8 @@ def get_hf_cache_path(hf_dataset_id: str, split: str, task_type: str = 'funcgnd'
     """
     # Get script directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    preferred_dir_name = 'elemgnd_hf_dataset_cache'
-    if task_type in ('funccap', 'easy_funccap'):
-        preferred_dir_name = 'regioncap_hf_dataset_cache'
-    cache_dir = os.path.join(script_dir, preferred_dir_name)
+    # Use shared cache directory for all task types (images are shared)
+    cache_dir = os.path.join(script_dir, 'elemgnd_hf_dataset_cache')
     os.makedirs(cache_dir, exist_ok=True)
     
     # Create a hash of dataset_id and split for cache (images are shared across task types)
@@ -794,20 +620,13 @@ def load_dataset_from_hf(hf_dataset_id: str, split: str = 'test', cache_dir: Opt
         return None
     
     for idx, item in tqdm(enumerate(dataset), total=len(dataset), desc="Converting dataset"):
-        # Handle image - for funccap, use annotated_image
-        if task_type in ('funccap', 'easy_funccap'):
-            image = item.get('annotated_image') or item.get('annotated_image_path')
-        else:
-            image = item.get('image') or item.get('image_path') or item.get('image_file')
-        
+        # Handle image - can be PIL Image or path string
+        image = item.get('image') or item.get('image_path') or item.get('image_file')
         if image is None:
             continue
 
         # Extract image_name early for use in both PIL and string cases
-        if task_type in ('funccap', 'easy_funccap'):
-            image_name = item.get('annotated_image_name', f'annotated_image_{idx}')
-        else:
-            image_name = item.get('image_name', f'image_{idx}')
+        image_name = item.get('image_name', f'image_{idx}')
         dataset_name = item.get('dataset_name', 'unknown')
         original_image_name = image_name
 
@@ -828,7 +647,7 @@ def load_dataset_from_hf(hf_dataset_id: str, split: str = 'test', cache_dir: Opt
                 debug_print(f"⚠️  Image path not found: {image_path}", level="warn")
                 continue
             # Derive image_name from path if missing or placeholder
-            if (not original_image_name) or original_image_name.startswith('image_') or original_image_name.startswith('annotated_image_'):
+            if (not original_image_name) or original_image_name.startswith('image_'):
                 image_name = os.path.basename(image_path)
             else:
                 image_name = original_image_name
@@ -836,23 +655,8 @@ def load_dataset_from_hf(hf_dataset_id: str, split: str = 'test', cache_dir: Opt
             debug_print(f"⚠️  Unsupported image type: {type(image)}", level="warn")
             continue
 
-        # Extract required fields based on task type
-        if task_type in ('funccap', 'easy_funccap'):
-            # For funccap, use fixed question and get options from dataset
-            # Prefer option_contexts, fallback to option_functionalities
-            question = FUNCCAP_DEFAULT_QUESTION
-            option_contexts = item.get('option_contexts', [])
-            if not option_contexts:
-                option_contexts = item.get('option_functionalities', [])
-            correct_option_idx = item.get('correct_option_idx', -1)
-            if isinstance(correct_option_idx, str) and correct_option_idx.isdigit():
-                correct_option_idx = int(correct_option_idx)
-            
-            if not option_contexts or not isinstance(option_contexts, list) or len(option_contexts) == 0:
-                continue
-            if correct_option_idx < 0 or correct_option_idx >= len(option_contexts):
-                continue
-        elif task_type == 'funcgnd':
+        # Extract required fields - use 'question' variable for all task types
+        if task_type == 'funcgnd':
             question = item.get('question', '') or item.get('query', '') or item.get('ref', '')
         elif task_type == 'descgnd':
             # For descgnd, prefer selecting from option_descriptions via correct_option_idx
@@ -860,6 +664,11 @@ def load_dataset_from_hf(hf_dataset_id: str, split: str = 'test', cache_dir: Opt
             if isinstance(correct_idx, str) and correct_idx.isdigit():
                 correct_idx = int(correct_idx)
             option_descriptions = item.get('option_descriptions')
+            if isinstance(option_descriptions, list):
+                option_descriptions = [
+                    replace_element_with_region(desc) if isinstance(desc, str) else desc
+                    for desc in option_descriptions
+                ]
             if isinstance(option_descriptions, list) and isinstance(correct_idx, int) and 0 <= correct_idx < len(option_descriptions):
                 question = option_descriptions[correct_idx]
             else:
@@ -867,6 +676,8 @@ def load_dataset_from_hf(hf_dataset_id: str, split: str = 'test', cache_dir: Opt
         else:
             question = item.get('question', '') or item.get('query', '')
 
+        # BBox: strictly use correct_bbox for HF dataset
+        bbox = item.get('correct_bbox', [])
         # Region attributes (fine-grained from option_region_types via correct_option_idx)
         correct_idx = item.get('correct_option_idx')
         if isinstance(correct_idx, str) and correct_idx.isdigit():
@@ -895,52 +706,33 @@ def load_dataset_from_hf(hf_dataset_id: str, split: str = 'test', cache_dir: Opt
         if isinstance(option_area_classes, list) and isinstance(correct_idx, int) and 0 <= correct_idx < len(option_area_classes):
             area_class = option_area_classes[correct_idx]
 
+
         if not question:
             continue
 
-        # For funccap-style tasks, create entry with options and correct answer
-        if task_type in ('funccap', 'easy_funccap'):
-            entry = {
-                'entry_id': f"{image_name}_{group_index}_{target_elem_id}_{idx}",
-                'image_path': image_path,
-                'image_name': image_name,
-                'dataset_name': dataset_name,
-                'question': question,
-                'options': option_contexts,
-                'correct_option_idx': correct_option_idx,
-                'correct_answer': option_contexts[correct_option_idx] if correct_option_idx >= 0 else '',
-                'group_index': group_index,
-                'target_elem_id': target_elem_id,
-                'density_class': density_class,
-                'num_similar_elements': num_similar_elements,
-                'region_type': region_type,
-                'region_parent': region_parent,
-                'area_class': area_class,
-            }
-            all_entries.append(entry)
-        else:
-            # For grounding tasks, require bbox
-            bbox = item.get('correct_bbox', [])
-            if not bbox or len(bbox) != 4:
-                continue
-            # Convert bbox to list of floats if needed
-            bbox = [float(x) for x in bbox]
-            entry = {
-                'entry_id': f"{image_name}_{group_index}_{target_elem_id}_{idx}",
-                'image_path': image_path,
-                'image_name': image_name,
-                'dataset_name': dataset_name,
-                'question': question,
-                'gt_bbox': bbox,
-                'group_index': group_index,
-                'target_elem_id': target_elem_id,
-                'density_class': density_class,
-                'num_similar_elements': num_similar_elements,
-                'region_type': region_type,
-                'region_parent': region_parent,
-                'area_class': area_class,
-            }
-            all_entries.append(entry)
+        if not bbox or len(bbox) != 4:
+            continue
+
+        # Convert bbox to list of floats if needed
+        bbox = [float(x) for x in bbox]
+
+        # Create entry
+        entry = {
+            'entry_id': f"{image_name}_{group_index}_{target_elem_id}_{idx}",
+            'image_path': image_path,
+            'image_name': image_name,
+            'dataset_name': dataset_name,
+            'question': question,
+            'gt_bbox': bbox,
+            'group_index': group_index,
+            'target_elem_id': target_elem_id,
+            'density_class': density_class,
+            'num_similar_elements': num_similar_elements,
+            'region_type': region_type,
+            'region_parent': region_parent,
+            'area_class': area_class,
+        }
+        all_entries.append(entry)
     
     debug_print(f"✅ Converted {len(all_entries)} entries from HuggingFace dataset", level="success")
     
@@ -975,12 +767,11 @@ def load_evaluation_dataset(source: str, questions_file: Optional[str] = None, h
         return load_dataset_from_json(questions_file)
 
 
-def load_checkpoint(checkpoint_file: str, task_type: str = 'funcgnd') -> Dict[str, Any]:
+def load_checkpoint(checkpoint_file: str) -> Dict[str, Any]:
     """Load evaluation checkpoint
     
     Args:
         checkpoint_file: Path to checkpoint JSON file (can be checkpoint or full result file)
-        task_type: Task type ('funcgnd', 'descgnd', 'intentgnd', 'funccap')
     
     Returns:
         Dictionary with processed entry IDs and results
@@ -1016,7 +807,7 @@ def load_checkpoint(checkpoint_file: str, task_type: str = 'funcgnd') -> Dict[st
                 debug_print(f"📝 processed_ids not found in checkpoint, inferring from {len(processed_ids)} results", level="info")
         
         # Filter out failed entries from processed_ids so they can be retried
-        # Success criteria depends on task type
+        # Only entries with inference_done=True and valid pred_bbox should be considered successfully processed
         successful_ids = set()
         failed_ids = set()
         
@@ -1024,19 +815,11 @@ def load_checkpoint(checkpoint_file: str, task_type: str = 'funcgnd') -> Dict[st
             result = results.get(entry_id)
             
             if result:
-                # Check if inference was successful based on task type
-                if task_type in ('funccap', 'easy_funccap'):
-                    # For funccap, only check inference_done (is_correct is for metrics, not for retry)
-                    if result.get('inference_done', False):
-                        successful_ids.add(entry_id)
-                    else:
-                        failed_ids.add(entry_id)
+                # Check if inference was successful
+                if result.get('inference_done', False) and result.get('pred_bbox') is not None:
+                    successful_ids.add(entry_id)
                 else:
-                    # For grounding tasks, check inference_done and pred_bbox
-                    if result.get('inference_done', False) and result.get('pred_bbox') is not None:
-                        successful_ids.add(entry_id)
-                    else:
-                        failed_ids.add(entry_id)
+                    failed_ids.add(entry_id)
             else:
                 # If we can't find the result, assume it needs to be retried
                 failed_ids.add(entry_id)
@@ -1107,24 +890,54 @@ def init_worker(model_args: Dict):
     model = model_args['model']
 
     MAX_TOKENS = 8192
-    if 'qwen' in model.lower():
-        base_url = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    
+    # Check if using local vllm deployment (localhost base_url)
+    # For local vllm, always use OpenAIModel regardless of model name
+    is_local_vllm = base_url and ('localhost' in base_url or '127.0.0.1' in base_url)
+    
+    if is_local_vllm:
+        # Local vllm deployment - use OpenAI-compatible API
+        cloud_model_class = OpenAIModel
+        api_key = api_key or "NOT_REQUIRED"
+        MAX_TOKENS = 8192
+    elif 'qwen' in model.lower():
+        # Qwen models (including Qwen3-VL-8B-Instruct, qwen3-vl-32b-thinking, etc.)
+        # Only for cloud API
+        base_url = base_url or 'https://dashscope.aliyuncs.com/compatible-mode/v1'
         api_key = api_key or os.environ.get("DASHSCOPE_API_KEY", "EMPTY")
         cloud_model_class = Qwen3VL
+        # Qwen models support longer outputs
+        MAX_TOKENS = 8192
     elif any(x in model.lower() for x in ['atlas']):
-        base_url = 'https://rvrvpi4zz7ispneo.us-east-1.aws.endpoints.huggingface.cloud/v1/'
+        base_url = base_url or 'https://rvrvpi4zz7ispneo.us-east-1.aws.endpoints.huggingface.cloud/v1/'
+        api_key = api_key or os.environ.get("HF_INFER_API_KEY", "EMPTY")
+        cloud_model_class = HFEndpoint
+    elif 'jedi' in model.lower():
+        if JEDI is None:
+            raise ImportError("JEDI model requires additional dependencies. Please install them first.")
+        base_url = 'https://afs3uxirrk48y8q5.us-east-1.aws.endpoints.huggingface.cloud/v1/'
+        api_key = api_key or os.environ.get("HF_INFER_API_KEY", "EMPTY")
+        cloud_model_class = JEDI
+    elif 'uground' in model.lower():
+        base_url = base_url or 'https://rs4m9o05rautq0ne.us-east-1.aws.endpoints.huggingface.cloud/v1/'
         api_key = api_key or os.environ.get("HF_INFER_API_KEY", "EMPTY")
         cloud_model_class = HFEndpoint
     elif 'tars' in model.lower():
+        if PARASAIL is None:
+            raise ImportError("PARASAIL model requires additional dependencies. Please install them first.")
         base_url = 'https://api.parasail.io/v1'
         api_key = api_key or os.environ.get("PARASAIL_API_KEY", "EMPTY")
         cloud_model_class = PARASAIL
         MAX_TOKENS = 2048
     elif 'seed' in model.lower():
+        if DOUBAO is None:
+            raise ImportError("DOUBAO model requires volcenginesdkarkruntime. Please install it first.")
         base_url = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
         api_key = api_key or os.environ.get("ARK_API_KEY", "EMPTY")
         cloud_model_class = DOUBAO
     elif 'step' in model.lower():
+        if STEPFUN is None:
+            raise ImportError("STEPFUN model requires additional dependencies. Please install them first.")
         base_url = 'https://api.stepfun.com/v1'
         api_key = api_key or os.environ.get("STEP_API_KEY", "EMPTY")
         cloud_model_class = STEPFUN
@@ -1133,9 +946,10 @@ def init_worker(model_args: Dict):
         api_key = api_key or os.environ.get("SILICON_API_KEY", "EMPTY")
         cloud_model_class = OpenAIModel
     else:
+        # Default: OpenAI-compatible API
         cloud_model_class = OpenAIModel
         base_url = base_url or os.environ.get("OPENAI_API_BASE_XIAOAI", "EMPTY")
-        api_key = api_key or os.environ.get("OPENAI_API_KEY_XIAOAI", "EMPTY")
+        api_key = api_key or os.environ.get("OPENAI_API_KEY_XIAOAI", "NOT_REQUIRED")
 
     worker_model = cloud_model_class(
         base_url=base_url,
@@ -1145,263 +959,14 @@ def init_worker(model_args: Dict):
         max_tokens=MAX_TOKENS
     )
 
-def parse_multiple_choice_answer(response: str, options: List[str], correct_option_idx: int) -> tuple:
-    """Parse multiple choice answer from model response
-    
-    This parser prioritizes explicit final answers (letters or option text)
-    and avoids matching option text that only appears in earlier reasoning.
-    
-    Args:
-        response: Model response string
-        options: List of option strings
-        correct_option_idx: Index of correct answer
-    
-    Returns:
-        Tuple of (predicted_index, is_correct)
-    """
-    if response is None:
-        return -1, False
-    
-    option_letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
-
-    def letter_to_index(letter: str) -> Optional[int]:
-        letter = letter.upper()
-        if len(letter) != 1 or letter < 'A':
-            return None
-        idx = ord(letter) - ord('A')
-        if 0 <= idx < len(options):
-            return idx
-        return None
-
-    def evaluate_lines(lines: List[str]) -> Optional[int]:
-        """Inspect lines (from bottom to top) to find an answer signal."""
-        for raw_line in reversed(lines):
-            line = raw_line.strip()
-            if not line:
-                continue
-            if re.fullmatch(r'<\s*/?\s*think\s*>', line, flags=re.IGNORECASE):
-                continue
-
-            # Match standalone option letters (e.g., "C", "Answer: C", "Option C")
-            letter_matches = re.findall(r'\b([A-H])\b', line, flags=re.IGNORECASE)
-            if letter_matches:
-                idx = letter_to_index(letter_matches[-1])
-                if idx is not None:
-                    return idx
-
-            # Match numeric answers (e.g., "Answer: 2")
-            index_match = re.search(r'\b([0-9])\b', line)
-            if index_match:
-                try:
-                    idx = int(index_match.group(1))
-                    if 0 <= idx < len(options):
-                        return idx
-                except ValueError:
-                    pass
-
-            # Match when the model repeats the option text verbatim as the final line
-            normalized_line = re.sub(r'[.\s]+$', '', line.lower())
-            for idx, option in enumerate(options):
-                option_normalized = re.sub(r'[.\s]+$', '', option.lower())
-                if normalized_line == option_normalized:
-                    return idx
-
-        return None
-
-    response_str = response.strip()
-    if not response_str:
-        return -1, False
-
-    # Prefer the portion after </think> if present
-    sections = []
-    think_split = re.split(r'</think>', response, flags=re.IGNORECASE)
-    if len(think_split) > 1:
-        sections.append(think_split[-1])
-    sections.append(response_str)
-
-    for section in sections:
-        lines = [line for line in section.splitlines() if line.strip()]
-        idx = evaluate_lines(lines)
-        if idx is not None:
-            return idx, idx == correct_option_idx
-
-    # If no match found, return -1 and False
-    return -1, False
-
-def process_funccap_entry(entry: Dict, worker_id: int = 0) -> Dict[str, Any]:
-    """Process a single funccap dataset entry (multiple choice task)
-    
-    Args:
-        entry: Dataset entry dictionary with options and correct_answer
-        worker_id: Worker ID for logging
-    
-    Returns:
-        Result dictionary with accuracy metrics
-    """
-    global worker_model
-    
-    entry_id = entry['entry_id']
-    image_path = entry['image_path']
-    question = entry.get('question', FUNCCAP_DEFAULT_QUESTION)
-    options = entry.get('options', [])
-    correct_option_idx = entry.get('correct_option_idx', -1)
-    correct_answer = entry.get('correct_answer', '')
-    
-    result = {
-        'entry_id': entry_id,
-        'image_path': image_path,
-        'image_name': entry.get('image_name', ''),
-        'dataset_name': entry.get('dataset_name', 'unknown'),
-        'question': question,
-        'options': options,
-        'correct_option_idx': correct_option_idx,
-        'correct_answer': correct_answer,
-        'pred_option_idx': None,
-        'pred_answer': None,
-        'is_correct': False,
-        'inference_done': False,
-        'error': None,
-        'response': None,
-        'processing_time': 0.0,
-        # Preserve metadata for decomposed metrics
-        'density_class': entry.get('density_class', 'unknown'),
-        'num_similar_elements': entry.get('num_similar_elements', -1),
-        'region_type': entry.get('region_type', ''),
-        'region_parent': entry.get('region_parent', 'Others'),
-        'area_class': entry.get('area_class'),
-    }
-    
-    start_time = time.time()
-    
-    if not options or len(options) == 0:
-        result['error'] = "No options found in entry"
-        result['processing_time'] = time.time() - start_time
-        return result
-    
-    if correct_option_idx < 0 or correct_option_idx >= len(options):
-        result['error'] = f"Invalid correct_option_idx: {correct_option_idx}"
-        result['processing_time'] = time.time() - start_time
-        return result
-    
-    retry = 0
-    while retry < 4:
-        try:
-            retry += 1
-            
-            # Format options as A, B, C, D, etc.
-            option_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
-            formatted_options = []
-            for idx, opt in enumerate(options):
-                if idx < len(option_letters):
-                    formatted_options.append(f"{option_letters[idx]}. {opt}")
-                else:
-                    formatted_options.append(f"{idx + 1}. {opt}")
-            
-            options_text = "\n".join(formatted_options)
-            prompt = FUNCCAP_PROMPT.format(options=options_text)
-            # print(f"[Worker {worker_id}] 📝 Funccap prompt follows:\n{prompt}\n")
-            
-            temp_img_path = image_path
-            if any(x in worker_model.model.lower() for x in ['claude']):
-                temp_img_path = f'temp_{os.getpid()}_{uuid.uuid4().hex[:8]}.png'
-                image = Image.open(image_path).convert("RGB")
-                resized_image, _ = resize_pil_image(image, max_size=2560)
-                resized_image.save(temp_img_path)
-            
-            # Pre-logging: Show query start information
-            image_name_short = os.path.basename(entry.get('image_name', entry.get('image_path', 'unknown')))
-            timestamp_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            retry_info = f" (retry {retry}/4)" if retry > 1 else ""
-            print(f"[Worker {worker_id}] 🚀 Starting funccap query{retry_info} | Entry: {entry_id} | "
-                  f"Model: {worker_model.model} | Image: {image_name_short} | [{timestamp_start}]")
-            
-            try:
-                # Get model response (use *_ to handle variable return values for thinking models)
-                success, response, *_ = worker_model.get_model_response(
-                    prompt,
-                    [temp_img_path],
-                    use_img_url=True,
-                    temperature=0.0,
-                    timeout=360
-                )
-            except Exception as e:
-                result['error'] = str(e)
-                import traceback
-                result['traceback'] = traceback.format_exc()
-                # Clean up temp file if needed
-                if any(x in worker_model.model.lower() for x in ['claude']):
-                    try:
-                        os.remove(temp_img_path)
-                    except Exception:
-                        pass
-                timestamp_error = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                error_msg_short = str(e)[:200]
-                print(f"[Worker {worker_id}] ❌ Query EXCEPTION | Entry: {entry_id} | "
-                      f"Model: {worker_model.model} | Error: {error_msg_short} | "
-                      f"Retry: {retry}/4 | [{timestamp_error}]")
-                continue
-            
-            if not success:
-                result['error'] = f"API call failed: {response}"
-                result['processing_time'] = time.time() - start_time
-                timestamp_error = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                error_msg_short = str(response)[:200] if response else "Unknown error"
-                print(f"[Worker {worker_id}] ❌ Query FAILED | Entry: {entry_id} | "
-                      f"Model: {worker_model.model} | Error: {error_msg_short} | "
-                      f"Time: {result['processing_time']:.2f}s | [{timestamp_error}]")
-                continue
-            
-            result['prompt'] = prompt
-            result['response'] = response
-            # print(f"[Worker {worker_id}] 🧠 Model raw response:\n{response}\n")
-            
-            # Parse answer from response
-            pred_idx, is_correct = parse_multiple_choice_answer(response, options, correct_option_idx)
-            
-            result['pred_option_idx'] = pred_idx
-            result['pred_answer'] = options[pred_idx] if pred_idx >= 0 else None
-            result['is_correct'] = is_correct
-            result['inference_done'] = True
-            
-            # Logging
-            status = "✅" if is_correct else "❌"
-            processing_time = time.time() - start_time
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            pred_str = f"Option {pred_idx} ({options[pred_idx] if pred_idx >= 0 else 'N/A'})" if pred_idx >= 0 else "N/A"
-            correct_str = f"Option {correct_option_idx} ({correct_answer})"
-            print(f"[Worker {worker_id}] {status} Query COMPLETE | Entry: {entry_id} | "
-                  f"GT: {correct_str} <=> Pred: {pred_str} | "
-                  f"Correct: {is_correct} | Time: {processing_time:.2f}s | [{timestamp}]")
-            
-            break
-        except Exception as e:
-            result['error'] = str(e)
-            import traceback
-            result['traceback'] = traceback.format_exc()
-            timestamp_error = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            error_msg_short = str(e)[:200]
-            print(f"[Worker {worker_id}] ❌ Query EXCEPTION | Entry: {entry_id} | "
-                  f"Model: {worker_model.model} | Error: {error_msg_short} | "
-                  f"Retry: {retry}/4 | [{timestamp_error}]")
-            continue
-    else:
-        result['error'] = "Failed to get valid response after all retries"
-        timestamp_error = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[Worker {worker_id}] ❌ Query FAILED (all retries exhausted) | Entry: {entry_id} | "
-              f"Model: {worker_model.model} | Error: Failed to get valid response | "
-              f"Total time: {time.time() - start_time:.2f}s | [{timestamp_error}]")
-    
-    result['processing_time'] = time.time() - start_time
-    return result
-
 def process_entry(entry: Dict, worker_id: int = 0, scale: int = 1000, task_type: str = 'funcgnd') -> Dict[str, Any]:
     """Process a single dataset entry
     
     Args:
         entry: Dataset entry dictionary
         worker_id: Worker ID for logging
-        scale: Scale for bbox normalization (default: 1000, not used for funccap)
-        task_type: Task type ('funcgnd', 'descgnd', 'intentgnd', 'funccap')
+        scale: Scale for bbox normalization (default: 1000)
+        task_type: Task type ('funcgnd', 'descgnd', 'intentgnd')
     
     Returns:
         Result dictionary with metrics
@@ -1411,18 +976,16 @@ def process_entry(entry: Dict, worker_id: int = 0, scale: int = 1000, task_type:
     entry_id = entry['entry_id']
     image_path = entry['image_path']
     
-    # Handle funccap task differently
-    if task_type in ('funccap', 'easy_funccap'):
-        return process_funccap_entry(entry, worker_id)
-    
-    # Original grounding task logic
     # Get the appropriate field based on task type
     question = entry.get('question', '')
 
-    gt_bbox = entry['gt_bbox']
+    gt_bbox = entry['gt_bbox'] # x1, y1, x2, y2
+
+    W, H = get_image_dimensions(image_path)
+
+    gt_bbox = [gt_bbox[0] / W, gt_bbox[1]/H, gt_bbox[2]/W, gt_bbox[3]/H]
+
     
-    if gt_bbox[0] > 1:
-        gt_bbox = [x / 1000 for x in gt_bbox]
 
     result = {
         'entry_id': entry_id,
@@ -1462,6 +1025,9 @@ def process_entry(entry: Dict, worker_id: int = 0, scale: int = 1000, task_type:
             ref_tag = REF_TAGS.get(task_type, 'a question about locating')
             ref_placeholder = REF_PLACEHOLDER.get(task_type, 'Question')
             temp_img_path = image_path
+            is_resized = False
+            system_prompt = None
+            orig_W, orig_H = get_image_dimensions(image_path)
 
             if 'gemini' in worker_model.model.lower():
                 prompt = GEMINI_GROUNDING_PROMPT.format(ref_tag=ref_tag, ref_placeholder=ref_placeholder, question=question)
@@ -1470,12 +1036,43 @@ def process_entry(entry: Dict, worker_id: int = 0, scale: int = 1000, task_type:
                 prompt = UI_TARS_PROMPT.format(question=question)
             elif 'atlas' in worker_model.model.lower():
                 prompt = OSATLAS_PROMPT.format(question=question)
+            elif 'uground' in worker_model.model.lower():
+                prompt = UGROUND_PROMPT.format(instruction=question)
+            elif 'jedi' in worker_model.model.lower():
+                is_resized = True
+                prompt = JEDI_PROMPT.format(instruction=('Click the region specified by this instruction: ' + question) if task_type in ['funcgnd', 'descgnd'] else question)
+                temp_img_path = f'jedi_temp_{os.getpid()}_{uuid.uuid4().hex[:8]}.png'
+                image = Image.open(image_path).convert("RGB")
+                resized_image, _ = resize_pil_image(image, max_size=1080)
+                resized_image.save(temp_img_path)
+            elif 'holo' in worker_model.model.lower():
+                # Use bbox prompt for Holo models to get bounding box output
+                prompt = HOLO_BBOX_PROMPT.format(ref_tag=ref_tag, ref_placeholder=ref_placeholder, question=question)
+            elif 'opencua' in worker_model.model.lower():
+                # Use bbox prompt for OpenCUA (outputs absolute pixel coordinates)
+                prompt = OPENCUA_BBOX_PROMPT.format(ref_tag=ref_tag, ref_placeholder=ref_placeholder, question=question)
+            elif 'infigui-g1' in worker_model.model.lower():
+                # Use Holo's bbox prompt for InfiGUI-G1 (outputs absolute coordinates)
+                prompt = HOLO_BBOX_PROMPT.format(ref_tag=ref_tag, ref_placeholder=ref_placeholder, question=question)
+            elif 'gui-r1' in worker_model.model.lower():
+                # Use Holo-style bbox prompt for GUI-R1 (output [xmin, ymin, xmax, ymax])
+                prompt = HOLO_BBOX_PROMPT.format(ref_tag=ref_tag, ref_placeholder=ref_placeholder, question=question)
+            elif 'venus' in worker_model.model.lower():
+                prompt = UIVENUS_PROMPT.format(instruction=question)
             elif any(x in worker_model.model.lower() for x in ['claude']):
+                is_resized = True
                 prompt = CLAUDE_GROUNDING_PROMPT.format(ref_tag=ref_tag, ref_placeholder=ref_placeholder, question=question)
-                temp_img_path = f'temp_{os.getpid()}_{uuid.uuid4().hex[:8]}.png'
+                temp_img_path = f'claude_temp_{os.getpid()}_{uuid.uuid4().hex[:8]}.png'
                 image = Image.open(image_path).convert("RGB")
                 resized_image, _ = resize_pil_image(image, max_size=2560)
                 resized_image.save(temp_img_path)
+            elif 'qwen3' in worker_model.model.lower():
+                prompt = GENERIC_PROMPT.format(ref_tag=ref_tag, ref_placeholder=ref_placeholder, question=question)
+                image = Image.open(image_path).convert("RGB")
+                if max(image.size) > 3500:
+                    temp_img_path = f'qwen3_temp_{os.getpid()}_{uuid.uuid4().hex[:8]}.png'
+                    resized_image, _ = resize_pil_image(image, max_size=3200)
+                    resized_image.save(temp_img_path)
             else:
                 prompt = GENERIC_PROMPT.format(ref_tag=ref_tag, ref_placeholder=ref_placeholder, question=question)
 
@@ -1489,13 +1086,15 @@ def process_entry(entry: Dict, worker_id: int = 0, scale: int = 1000, task_type:
                   f"Model: {worker_model.model} | Image: {image_name_short} | [{timestamp_start}]")
 
             try:
-                # Get model response (use *_ to handle variable return values for thinking models)
-                success, response, *_ = worker_model.get_model_response(
+                # Get model response
+                success, response, _ = worker_model.get_model_response(
                     prompt, 
                     [temp_img_path], 
                     use_img_url=True, 
                     temperature=0.0, 
-                    timeout=360
+                    timeout=360,
+                    image_first=any(x in worker_model.model.lower() for x in ['opencua', 'holo', 'infigui-g1', 'gui-r1']),
+                    sys_prompt=system_prompt if system_prompt else ''
                 )
             except Exception as e:
                 # Exception during API call - log and continue to next retry
@@ -1503,7 +1102,7 @@ def process_entry(entry: Dict, worker_id: int = 0, scale: int = 1000, task_type:
                 import traceback
                 result['traceback'] = traceback.format_exc()
                 # Clean up temp file if needed
-                if any(x in worker_model.model.lower() for x in ['claude']):
+                if is_resized:
                     try:
                         os.remove(temp_img_path)
                     except Exception:
@@ -1532,8 +1131,8 @@ def process_entry(entry: Dict, worker_id: int = 0, scale: int = 1000, task_type:
             result['prompt'], result['response'] = prompt, response
 
             # Parse bbox from response
-            if '<think>' in response:
-                thinking = response.split('<think>')[1].split('</think>')[0].strip()
+            if '</think>' in response:
+                thinking = response.split('</think>')[0].replace('<think>', '').strip()
                 bbox_str = response.split('</think>')[1].strip()
             else:
                 thinking, bbox_str = '', response.strip()
@@ -1541,45 +1140,87 @@ def process_entry(entry: Dict, worker_id: int = 0, scale: int = 1000, task_type:
             result['thinking'], result['bbox_pred_str'] = thinking, bbox_str
 
             # Parsing
-
-            
-            # Case 1: Gemini
             raw_pred_bbox = None
-            if '```json' in bbox_str or bbox_str.startswith('{') and bbox_str.endswith('}'):
-                bbox_cleaned = bbox_str.split('```json')[1].split('```')[0].strip() if '```json' in bbox_str else bbox_str
-                bbox_parsed = json.loads(bbox_cleaned)
 
-                if isinstance(bbox_parsed, list):
-                    item = bbox_parsed[0]
-                    if isinstance(item, dict):
-                        if 'box_2d' in item:
-                            raw_pred_bbox = item['box_2d']
-                    else:
-                        raw_pred_bbox = bbox_parsed
-                elif isinstance(bbox_parsed, dict):
-                    if 'box_2d' in bbox_parsed:
-                        raw_pred_bbox = bbox_parsed['box_2d']
-                
-                if any([p > 1 for p in raw_pred_bbox]):
-                    raw_pred_bbox = pred_2_point(raw_pred_bbox, scale=scale, w=W, h=H)
             # Case 2: GLM-4.5. "The bounding box for the 'wall_95' entry in the Outliner list is <|begin_of_box|>[816, 162, 838, 172]<|end_of_box|>."
-            elif '<|begin_of_box|>' in bbox_str:
+            if '<|begin_of_box|>' in bbox_str:
                 raw_pred_bbox = bbox_str.split('<|begin_of_box|>')[1].split('<|end_of_box|>')[0].strip()
                 raw_pred_bbox = pred_2_point(raw_pred_bbox, scale=scale)
             # Case 4: UI-Tars: "Action: click(start_box='(1786,924)')"
             elif 'tars' in worker_model.model.lower():
                 pass
             # Case 5: OS-Atlas: <|object_ref_start|>language switch<|object_ref_end|><|box_start|>(576,12),(592,42)<|box_end|><|im_end|>
+            # Or: Week 0 Functions(212,646),(324,676)
             elif 'atlas' in worker_model.model.lower():
-                if '(' in bbox_str and ')' in bbox_str:
-                    bbox_str = bbox_str[bbox_str.rfind('('):]
-                elif '[' in bbox_str and ']' in bbox_str:
-                    bbox_str = bbox_str[bbox_str.rfind('['):]
-                raw_pred_bbox = pred_2_point(bbox_str, scale=scale)
-
-            # Fall back to a general parsing method
-            if raw_pred_bbox is None or any([p > 1 for p in raw_pred_bbox]):
+                # Extract only the coordinate part to avoid parsing numbers from text
+                # Find the last occurrence of coordinates pattern (x1,y1),(x2,y2)
+                import re
+                coord_pattern = re.compile(r'\((\d+),(\d+)\),\((\d+),(\d+)\)')
+                match = coord_pattern.search(bbox_str)
+                if match:
+                    # Extract the matched coordinates and convert to bbox format
+                    x1, y1, x2, y2 = map(int, match.groups())
+                    raw_pred_bbox = [x1, y1, x2, y2]
+                    raw_pred_bbox = pred_2_point(raw_pred_bbox, scale=scale)
+                else:
+                    # Fallback: try to extract from the last parenthesis
+                    if '(' in bbox_str and ')' in bbox_str:
+                        # Find the last complete coordinate pair
+                        last_paren_start = bbox_str.rfind('(')
+                        bbox_str_trimmed = bbox_str[last_paren_start:]
+                        raw_pred_bbox = pred_2_point(bbox_str_trimmed, scale=scale)
+                    else:
+                        raw_pred_bbox = None
+            # Case 6: JEDI: '<tool_call>\n{"name": "computer_use", "arguments": {"action": "left_click", "coordinate": [453, 258]}}\n</tool_call>'
+            elif 'jedi' in worker_model.model.lower():
+                bbox_str = bbox_str[bbox_str.rfind('['):bbox_str.rfind(']')+1]
                 raw_pred_bbox = pred_2_point(bbox_str, scale=scale, w=W, h=H)
+            # Case 7: Holo - now outputs bbox: "Box: [x1, y1, x2, y2]" or direct list
+            elif 'holo' in worker_model.model.lower():
+                # Holo now outputs bbox format, not point
+                raw_pred_bbox = pred_2_point(bbox_str, scale=scale, w=W, h=H)
+            # Case 8: OpenCUA: bbox prompt; model may output (x, y, width, height) instead of (xmin, ymin, xmax, ymax)
+            elif 'opencua' in worker_model.model.lower():
+                raw_pred_bbox = pred_2_point(bbox_str, scale=scale, w=W, h=H)
+                # If 4 values and xmax<xmin or ymax<ymin, treat as (x, y, w, h) and convert to (xmin, ymin, xmax, ymax)
+                if (raw_pred_bbox is not None and isinstance(raw_pred_bbox, list) and len(raw_pred_bbox) == 4 and
+                    (raw_pred_bbox[2] < raw_pred_bbox[0] or raw_pred_bbox[3] < raw_pred_bbox[1])):
+                    raw_pred_bbox = [
+                        raw_pred_bbox[0], raw_pred_bbox[1],
+                        raw_pred_bbox[0] + raw_pred_bbox[2], raw_pred_bbox[1] + raw_pred_bbox[3]
+                    ]
+            # Case 9: InfiGUI-G1: Now uses Holo's bbox prompt, outputs bbox format like "[47, 358, 161, 391]"
+            elif 'infigui-g1' in worker_model.model.lower():
+                # Parse bbox string using pred_2_point (absolute coordinates, scale=-1)
+                raw_pred_bbox = pred_2_point(bbox_str, scale=scale, w=W, h=H)
+            # Case 10: GUI-R1: now uses Holo-style bbox prompt; parse [xmin, ymin, xmax, ymax] (absolute pixel)
+            elif 'gui-r1' in worker_model.model.lower():
+                raw_pred_bbox = pred_2_point(bbox_str, scale=scale, w=W, h=H)
+            # Case 11: UI-Venus: outputs bbox "[x1,y1,x2,y2]" in absolute pixel coordinates
+            elif 'venus' in worker_model.model.lower():
+                raw_pred_bbox = pred_2_point(bbox_str, scale=scale, w=W, h=H)
+            elif '```json' in bbox_str or bbox_str.startswith('{') and bbox_str.endswith('}'):
+                    bbox_cleaned = bbox_str.split('```json')[1].split('```')[0].strip() if '```json' in bbox_str else bbox_str
+                    bbox_parsed = json.loads(bbox_cleaned)
+
+                    if isinstance(bbox_parsed, list):
+                        item = bbox_parsed[0]
+                        if isinstance(item, dict):
+                            if 'box_2d' in item:
+                                raw_pred_bbox = item['box_2d']
+                        else:
+                            raw_pred_bbox = bbox_parsed
+                    elif isinstance(bbox_parsed, dict):
+                        if 'box_2d' in bbox_parsed:
+                            raw_pred_bbox = bbox_parsed['box_2d']
+                    
+                    if any([p > 1 for p in raw_pred_bbox]):
+                        raw_pred_bbox = pred_2_point(raw_pred_bbox, scale=scale, w=W, h=H)
+            # Fall back to a general parsing method
+            if raw_pred_bbox is None:
+                raw_pred_bbox = pred_2_point(bbox_str, scale=scale, w=W, h=H)
+            elif any([p > 1 for p in raw_pred_bbox]):
+                raw_pred_bbox = pred_2_point(raw_pred_bbox, scale=scale, w=W, h=H)
 
             # Adjust bbox format according to the model preferece
             pred_bbox = adjust_bbox(worker_model.model, raw_pred_bbox)
@@ -1626,11 +1267,24 @@ def process_entry(entry: Dict, worker_id: int = 0, scale: int = 1000, task_type:
             print(f"[Worker {worker_id}] {status} Query COMPLETE | Entry: {entry_id} | GT: {gt_bbox} <=> Pred: {bbox_str} -> {pred_bbox} -> {center} | "
                   f"IoU={iou:.3f} | CenterAcc={center_acc} | Time: {processing_time:.2f}s | [{timestamp}]")
             
+            # Clean up temp file if needed
+            if is_resized and temp_img_path != image_path:
+                try:
+                    os.remove(temp_img_path)
+                except Exception:
+                    pass
+            
             break
         except Exception as e:
             result['error'] = str(e)
             import traceback
             result['traceback'] = traceback.format_exc()
+            # Clean up temp file if needed
+            if is_resized and temp_img_path != image_path:
+                try:
+                    os.remove(temp_img_path)
+                except Exception:
+                    pass
             # Concise error logging for exceptions
             timestamp_error = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             error_msg_short = str(e)[:200]
@@ -1693,7 +1347,8 @@ def process_entries_with_multiprocessing(entries: List[Dict], model_args: Dict,
         entries = entries[:args.sample_limit]
     
     # Determine the scale
-    if any(x in model_args['model'].lower() for x in ['claude', 'tars']): # Claude-Sonnet-4.5
+    # The scale of Hcompany/Holo2-8B is 1000 while that of Hcompany/Holo1.5-7B is -1 (absolute coordinates)
+    if any(x in model_args['model'].lower() for x in ['claude', 'tars', 'jedi', 'holo1.5', 'opencua', 'infigui-g1', 'gui-r1', 'venus']):
         scale = -1
     else:
         scale = 1000
@@ -1713,12 +1368,8 @@ def process_entries_with_multiprocessing(entries: List[Dict], model_args: Dict,
             entry_id = entry[0]['entry_id']
             if entry_id in checkpoint_results:
                 result = checkpoint_results[entry_id]
-                if args.task_type in ('funccap', 'easy_funccap'):
-                    if not result.get('inference_done', False):
-                        retry_count += 1
-                else:
-                    if not result.get('inference_done', False) or result.get('pred_bbox') is None:
-                        retry_count += 1
+                if not result.get('inference_done', False) or result.get('pred_bbox') is None:
+                    retry_count += 1
     elif isinstance(checkpoint_results, list):
         # Handle list format (from full result files)
         results_by_id = {r.get('entry_id'): r for r in checkpoint_results if 'entry_id' in r}
@@ -1726,12 +1377,8 @@ def process_entries_with_multiprocessing(entries: List[Dict], model_args: Dict,
             entry_id = entry[0]['entry_id']
             if entry_id in results_by_id:
                 result = results_by_id[entry_id]
-                if args.task_type in ('funccap', 'easy_funccap'):
-                    if not result.get('inference_done', False):
-                        retry_count += 1
-                else:
-                    if not result.get('inference_done', False) or result.get('pred_bbox') is None:
-                        retry_count += 1
+                if not result.get('inference_done', False) or result.get('pred_bbox') is None:
+                    retry_count += 1
     
     if retry_count > 0:
         debug_print(f"📋 Processing {len(entries_to_process)}/{len(entries)} entries ({retry_count} retries, {len(entries_to_process) - retry_count} new)", level="info")
@@ -1748,16 +1395,9 @@ def process_entries_with_multiprocessing(entries: List[Dict], model_args: Dict,
             with lock:
                 # Only mark as processed if inference was successful
                 # Failed entries will be retried on next run
-                if args.task_type in ('funccap', 'easy_funccap'):
-                    # For funccap, check if inference_done is True
-                    if result.get('inference_done', False):
-                        processed_ids[result['entry_id']] = True
-                        processed_count.value += 1
-                else:
-                    # For grounding tasks, check pred_bbox
-                    if result.get('inference_done', False) and result.get('pred_bbox') is not None:
-                        processed_ids[result['entry_id']] = True
-                        processed_count.value += 1
+                if result.get('inference_done', False) and result.get('pred_bbox') is not None:
+                    processed_ids[result['entry_id']] = True
+                    processed_count.value += 1
                 # Still save failed results to checkpoint for history, but don't mark as processed
 
             update_throughput()
@@ -1781,191 +1421,163 @@ def process_entries_with_multiprocessing(entries: List[Dict], model_args: Dict,
     return all_results
 
 
-def calculate_metrics_for_subset(subset_results: List[Dict], task_type: str = 'funcgnd') -> Dict[str, Any]:
+def calculate_metrics_for_subset(subset_results: List[Dict]) -> Dict[str, Any]:
     """Calculate metrics for a subset of results"""
     total = len(subset_results)
     successful = sum(1 for r in subset_results if r.get('inference_done', False))
     
     if successful == 0:
-        if task_type in ('funccap', 'easy_funccap'):
-            return {
-                'total': total,
-                'successful': 0,
-                'success_rate': 0.0,
-                'accuracy': 0.0
-            }
-        else:
-            return {
-                'total': total,
-                'successful': 0,
-                'success_rate': 0.0,
-                'avg_iou': 0.0,
-                'iou_thresholds': {},
-                'center_acc': 0.0
-            }
+        return {
+            'total': total,
+            'successful': 0,
+            'success_rate': 0.0,
+            'avg_iou': 0.0,
+            'iou_thresholds': {},
+            'center_acc': 0.0
+        }
     
-    if task_type in ('funccap', 'easy_funccap'):
-        # For funccap, calculate accuracy
-        correct_count = sum(1 for r in subset_results if r.get('inference_done', False) and r.get('is_correct', False))
-        accuracy = correct_count / total if total > 0 else 0.0
-        
-        return {
-            'total': total,
-            'successful': successful,
-            'success_rate': successful / total if total > 0 else 0.0,
-            'accuracy': accuracy
-        }
-    else:
-        # For grounding tasks, calculate IoU metrics
-        ious = [r.get('iou', 0.0) for r in subset_results if r.get('inference_done', False) and 'iou' in r]
-        avg_iou = sum(ious) / len(ious) if ious else 0.0
-        
-        thresholds = [0.1, 0.3, 0.5, 0.7, 0.9]
-        iou_thresholds = {}
-        for threshold in thresholds:
-            count = sum(1 for iou in ious if iou >= threshold)
-            iou_thresholds[f'iou@{threshold}'] = count / total if total > 0 else 0.0
-        
-        center_accs = [r.get('center_acc', False) for r in subset_results if r.get('inference_done', False) and 'center_acc' in r]
-        center_acc = sum(center_accs) / len(center_accs) if center_accs else 0.0
-        
-        return {
-            'total': total,
-            'successful': successful,
-            'success_rate': successful / total if total > 0 else 0.0,
-            'avg_iou': avg_iou,
-            'iou_thresholds': iou_thresholds,
-            'center_acc': center_acc
-        }
+    ious = [r.get('iou', 0.0) for r in subset_results if r.get('inference_done', False) and 'iou' in r]
+    avg_iou = sum(ious) / len(ious) if ious else 0.0
+    
+    thresholds = [0.1, 0.3, 0.5, 0.7, 0.9]
+    iou_thresholds = {}
+    for threshold in thresholds:
+        count = sum(1 for iou in ious if iou >= threshold)
+        iou_thresholds[f'iou@{threshold}'] = count / total if total > 0 else 0.0
+    
+    center_accs = [r.get('center_acc', False) for r in subset_results if r.get('inference_done', False) and 'center_acc' in r]
+    center_acc = sum(center_accs) / len(center_accs) if center_accs else 0.0
+    
+    return {
+        'total': total,
+        'successful': successful,
+        'success_rate': successful / total if total > 0 else 0.0,
+        'avg_iou': avg_iou,
+        'iou_thresholds': iou_thresholds,
+        'center_acc': center_acc
+    }
 
 
-def calculate_metrics(results: List[Dict], task_type: str = 'funcgnd') -> Dict[str, Any]:
+def calculate_metrics(results: List[Dict]) -> Dict[str, Any]:
     """Calculate evaluation metrics with decomposed breakdowns"""
     total = len(results)
     successful = sum(1 for r in results if r.get('inference_done', False))
 
-    if task_type in ('funccap', 'easy_funccap'):
-        # For funccap, calculate accuracy
-        if successful == 0:
-            return {
-                'total': total,
-                'successful': 0,
-                'success_rate': 0.0,
-                'accuracy': 0.0,
-                'decomposed': {}
-            }
-        
-        correct_count = sum(1 for r in results if r.get('inference_done', False) and r.get('is_correct', False))
-        accuracy = correct_count / total if total > 0 else 0.0
-        
-        # Region parent (6-bucket) breakdown
-        region_parent_breakdown = {}
-        for parent in ['Primary Interface Containers',
-                       'Global Navigation & Structure',
-                       'Content & Data Display',
-                       'Interaction & Input',
-                       'Contextual & Temporary Regions',
-                       'Others']:
-            subset = [r for r in results if r.get('inference_done', False) and r.get('region_parent', 'Others') == parent]
-            region_parent_breakdown[parent] = calculate_metrics_for_subset(subset, task_type) if subset else {
-                'total': 0,
-                'successful': 0,
-                'success_rate': 0.0,
-                'accuracy': 0.0
-            }
-        
+    if successful == 0:
         return {
             'total': total,
-            'successful': successful,
-            'success_rate': successful / total if total > 0 else 0.0,
-            'accuracy': accuracy,
-            'decomposed': {
-                'by_region_parent': region_parent_breakdown,
-            }
+            'successful': 0,
+            'success_rate': 0.0,
+            'avg_iou': 0.0,
+            'iou_thresholds': {},
+            'center_acc': 0.0,
+            'decomposed': {}
         }
-    else:
-        # For grounding tasks, calculate IoU metrics
-        if successful == 0:
-            return {
-                'total': total,
-                'successful': 0,
-                'success_rate': 0.0,
-                'avg_iou': 0.0,
-                'iou_thresholds': {},
-                'center_acc': 0.0,
-                'decomposed': {}
-            }
 
-        # Get IoU values for successful predictions
-        ious = [r.get('iou', 0.0) for r in results if r.get('inference_done', False) and 'iou' in r]
-        avg_iou = sum(ious) / len(ious) if ious else 0.0
-        
-        # Calculate accuracy at different IoU thresholds
-        thresholds = [0.1, 0.3, 0.5, 0.7, 0.9]
-        iou_thresholds = {}
-        for threshold in thresholds:
-            count = sum(1 for iou in ious if iou >= threshold)
-            iou_thresholds[f'iou@{threshold}'] = count / total if total > 0 else 0.0
-        
-        # Calculate center accuracy
-        center_accs = [r.get('center_acc', False) for r in results if r.get('inference_done', False) and 'center_acc' in r]
-        center_acc = sum(center_accs) / len(center_accs) if center_accs else 0.0
+    # Get IoU values for successful predictions
+    ious = [r.get('iou', 0.0) for r in results if r.get('inference_done', False) and 'iou' in r]
+    avg_iou = sum(ious) / len(ious) if ious else 0.0
+    
+    # Calculate accuracy at different IoU thresholds
+    thresholds = [0.1, 0.3, 0.5, 0.7, 0.9]
+    iou_thresholds = {}
+    for threshold in thresholds:
+        count = sum(1 for iou in ious if iou >= threshold)
+        iou_thresholds[f'iou@{threshold}'] = count / total if total > 0 else 0.0
+    
+    # Calculate center accuracy
+    center_accs = [r.get('center_acc', False) for r in results if r.get('inference_done', False) and 'center_acc' in r]
+    center_acc = sum(center_accs) / len(center_accs) if center_accs else 0.0
 
-        # Region parent (6-bucket) breakdown
-        region_parent_breakdown = {}
-        for parent in ['Primary Interface Containers',
-                       'Global Navigation & Structure',
-                       'Content & Data Display',
-                       'Interaction & Input',
-                       'Contextual & Temporary Regions',
-                       'Others']:
-            subset = [r for r in results if r.get('inference_done', False) and r.get('region_parent', 'Others') == parent]
-            region_parent_breakdown[parent] = calculate_metrics_for_subset(subset, task_type) if subset else {
-                'total': 0,
-                'successful': 0,
-                'success_rate': 0.0,
-                'avg_iou': 0.0,
-                'iou_thresholds': {f'iou@{t}': 0.0 for t in [0.1, 0.3, 0.5, 0.7, 0.9]},
-                'center_acc': 0.0
-            }
-        
-        return {
-            'total': total,
-            'successful': successful,
-            'success_rate': successful / total if total > 0 else 0.0,
-            'avg_iou': avg_iou,
-            'iou_thresholds': iou_thresholds,
-            'center_acc': center_acc,
-            'decomposed': {
-                'by_region_parent': region_parent_breakdown,
-            }
+    # Area class breakdown (use dataset-provided area_class values only)
+    area_breakdown = {}
+    present_area_classes = sorted({r.get('area_class') for r in results if r.get('inference_done', False) and r.get('area_class')})
+    for area_class in present_area_classes:
+        subset = [r for r in results if r.get('inference_done', False) and r.get('area_class') == area_class]
+        area_breakdown[area_class] = calculate_metrics_for_subset(subset) if subset else {
+            'total': 0,
+            'successful': 0,
+            'success_rate': 0.0,
+            'avg_iou': 0.0,
+            'iou_thresholds': {f'iou@{t}': 0.0 for t in [0.1, 0.3, 0.5, 0.7, 0.9]},
+            'center_acc': 0.0
         }
+
+    # Region parent (6-bucket) breakdown
+    region_parent_breakdown = {}
+    for parent in ['Primary Interface Containers',
+                   'Global Navigation & Structure',
+                   'Content & Data Display',
+                   'Interaction & Input',
+                   'Contextual & Temporary Regions',
+                   'Others']:
+        subset = [r for r in results if r.get('inference_done', False) and r.get('region_parent', 'Others') == parent]
+        region_parent_breakdown[parent] = calculate_metrics_for_subset(subset) if subset else {
+            'total': 0,
+            'successful': 0,
+            'success_rate': 0.0,
+            'avg_iou': 0.0,
+            'iou_thresholds': {f'iou@{t}': 0.0 for t in [0.1, 0.3, 0.5, 0.7, 0.9]},
+            'center_acc': 0.0
+        }
+
+    # Decomposed metrics by density class
+    density_breakdown = {}
+    for density in ['sparse', 'medium', 'dense', 'unknown']:
+        subset = [r for r in results if r.get('density_class', 'unknown') == density]
+        if subset:
+            density_breakdown[density] = calculate_metrics_for_subset(subset)
+    
+    # Decomposed metrics by number of similar elements
+    def get_num_elements_category(num_elements: int) -> str:
+        if num_elements < 0:
+            return 'unknown'
+        elif num_elements <= 2:
+            return '1-2'
+        elif num_elements <= 4:
+            return '3-4'
+        elif num_elements <= 6:
+            return '5-6'
+        else:
+            return '7+'
+    
+    num_elements_breakdown = {}
+    for category in ['1-2', '3-4', '5-6', '7+', 'unknown']:
+        subset = [r for r in results if get_num_elements_category(r.get('num_similar_elements', -1)) == category]
+        # Always include category, even if empty, to show complete breakdown
+        num_elements_breakdown[category] = calculate_metrics_for_subset(subset) if subset else {
+            'total': 0,
+            'successful': 0,
+            'success_rate': 0.0,
+            'avg_iou': 0.0,
+            'iou_thresholds': {f'iou@{t}': 0.0 for t in [0.1, 0.3, 0.5, 0.7, 0.9]},
+            'center_acc': 0.0
+        }
+    
+    return {
+        'total': total,
+        'successful': successful,
+        'success_rate': successful / total if total > 0 else 0.0,
+        'avg_iou': avg_iou,
+        'iou_thresholds': iou_thresholds,
+        'center_acc': center_acc,
+        'decomposed': {
+            'by_density': density_breakdown,
+            'by_num_similar_elements': num_elements_breakdown,
+            'by_region_parent': region_parent_breakdown,
+            'by_area_class': area_breakdown,
+        }
+    }
 
 
 def main(args):
     """Main evaluation function"""
     debug_print("═" * 60, level="title")
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    if args.task_type == 'easy_funccap':
-        if not args.questions_file:
-            args.questions_file = os.path.join(script_dir, 'easy_func_dataset_sample.json')
-        # Easy Funccap always uses local JSON; ignore HF configuration
-        args.hf_dataset_id = None
-    if args.task_type in ('funccap', 'easy_funccap'):
-        title = "🔍 Functional Region Captioning (Funccap) Evaluation"
-        if args.task_type == 'easy_funccap':
-            title = "🔍 Easy Functional Region Captioning Evaluation"
-        debug_print(title, level="title")
-    else:
-        debug_print("🔍 Functional Region Grounding Evaluation", level="title")
+    debug_print("🔍 Functional Region Grounding Evaluation", level="title")
     debug_print("═" * 60, level="title")
     
     debug_print("\n📁 INPUT CONFIGURATION", level="step")
-    if args.task_type == 'easy_funccap':
-        debug_print(f"   Source: {Fore.GREEN}Easy Funccap JSON File{Style.RESET_ALL}", level="info")
-        debug_print(f"   Questions File: {Fore.CYAN}{args.questions_file}{Style.RESET_ALL}", level="info")
-    elif args.hf_dataset_id:
+    if args.hf_dataset_id:
         debug_print(f"   Source: {Fore.GREEN}HuggingFace{Style.RESET_ALL}", level="info")
         debug_print(f"   Dataset ID: {Fore.CYAN}{args.hf_dataset_id}{Style.RESET_ALL}", level="info")
         debug_print(f"   Task Type: {Fore.CYAN}{args.task_type}{Style.RESET_ALL}", level="info")
@@ -1994,13 +1606,7 @@ def main(args):
     debug_print("\n" + "═" * 60, level="title")
     
     # Load dataset
-    # Priority: questions_file > hf_dataset_id (even if hf_dataset_id has default value)
-    if args.task_type == 'easy_funccap':
-        entries = load_easy_funccap_dataset(args.questions_file)
-    elif args.questions_file:
-        # If questions_file is explicitly provided, use it (ignore hf_dataset_id default)
-        entries = load_evaluation_dataset('json', questions_file=args.questions_file, task_type=args.task_type)
-    elif args.hf_dataset_id:
+    if args.hf_dataset_id:
         entries = load_evaluation_dataset('hf', hf_dataset_id=args.hf_dataset_id, 
                               hf_split=args.hf_split, hf_cache_dir=args.hf_cache_dir, task_type=args.task_type)
     else:
@@ -2019,13 +1625,7 @@ def main(args):
             debug_print(f"     question={e.get('question')}", level="info")
             debug_print(f"     region_type={e.get('region_type')} | region_parent={e.get('region_parent')}", level="info")
             debug_print(f"     density_class={e.get('density_class')} | area_class={e.get('area_class')} | num_similar_elements={e.get('num_similar_elements')}", level="info")
-            if args.task_type in ('funccap', 'easy_funccap'):
-                options = e.get('options', [])
-                correct_idx = e.get('correct_option_idx', -1)
-                debug_print(f"     options={options}", level="info")
-                debug_print(f"     correct_option_idx={correct_idx} ({options[correct_idx] if 0 <= correct_idx < len(options) else 'N/A'})", level="info")
-            else:
-                debug_print(f"     gt_bbox={e.get('gt_bbox')}", level="info")
+            debug_print(f"     gt_bbox={e.get('gt_bbox')}", level="info")
         return
     
     # Setup checkpoint and result file paths
@@ -2062,7 +1662,7 @@ def main(args):
     # Load checkpoint
     checkpoint = {'processed_ids': set(), 'results': {}}
     if os.path.exists(checkpoint_file):
-        checkpoint = load_checkpoint(checkpoint_file, args.task_type)
+        checkpoint = load_checkpoint(checkpoint_file)
     
     # Set checkpoint_file in args for use in processing
     args.checkpoint_file = checkpoint_file
@@ -2084,7 +1684,7 @@ def main(args):
     
     # Calculate metrics from all results
     debug_print(f"\n📊 Calculating metrics...", level="step")
-    metrics = calculate_metrics(results, args.task_type)
+    metrics = calculate_metrics(results)
     
     # Prepare final output
     output = {
@@ -2132,43 +1732,32 @@ def main(args):
         
         overall_table.add_row("Total Entries", str(metrics['total']))
         overall_table.add_row("Successful", f"{metrics['successful']} ({metrics['success_rate']*100:.1f}%)")
-        if args.task_type in ('funccap', 'easy_funccap'):
-            overall_table.add_row("Accuracy", f"{metrics.get('accuracy', 0.0)*100:.1f}%")
-        else:
-            overall_table.add_row("Average IoU", f"{metrics['avg_iou']:.3f}")
-            overall_table.add_row("Center Accuracy", f"{metrics.get('center_acc', 0.0)*100:.1f}%")
+        overall_table.add_row("Average IoU", f"{metrics['avg_iou']:.3f}")
+        overall_table.add_row("Center Accuracy", f"{metrics.get('center_acc', 0.0)*100:.1f}%")
         
         console.print(overall_table)
         
-        # IoU thresholds table (only for grounding tasks)
-        if args.task_type not in ('funccap', 'easy_funccap') and 'iou_thresholds' in metrics:
-            iou_table = Table(title="📈 Accuracy at IoU Thresholds", box=box.ROUNDED, show_header=True, header_style="bold blue")
-            iou_table.add_column("Threshold", style="cyan", justify="center")
-            iou_table.add_column("Accuracy", style="green", justify="right")
-            
-            for threshold, acc in sorted(metrics['iou_thresholds'].items(), key=lambda x: float(x[0].split('@')[1])):
-                iou_table.add_row(threshold, f"{acc*100:.1f}%")
-            
-            console.print("\n")
-            console.print(iou_table)
+        # IoU thresholds table
+        iou_table = Table(title="📈 Accuracy at IoU Thresholds", box=box.ROUNDED, show_header=True, header_style="bold blue")
+        iou_table.add_column("Threshold", style="cyan", justify="center")
+        iou_table.add_column("Accuracy", style="green", justify="right")
+        
+        for threshold, acc in sorted(metrics['iou_thresholds'].items(), key=lambda x: float(x[0].split('@')[1])):
+            iou_table.add_row(threshold, f"{acc*100:.1f}%")
+        
+        console.print("\n")
+        console.print(iou_table)
         
         # Region parent breakdown table
         decomposed = metrics.get('decomposed', {})
         if decomposed.get('by_region_parent'):
-            if args.task_type in ('funccap', 'easy_funccap'):
-                parent_table = Table(title="🗂️ Metrics by Region Parent (6 classes)", box=box.ROUNDED, show_header=True, header_style="bold yellow")
-                parent_table.add_column("Parent", style="cyan")
-                parent_table.add_column("Total", style="white", justify="right")
-                parent_table.add_column("Success Rate", style="green", justify="right")
-                parent_table.add_column("Accuracy", style="green", justify="right")
-            else:
-                parent_table = Table(title="🗂️ Metrics by Region Parent (6 classes)", box=box.ROUNDED, show_header=True, header_style="bold yellow")
-                parent_table.add_column("Parent", style="cyan")
-                parent_table.add_column("Total", style="white", justify="right")
-                parent_table.add_column("Success Rate", style="green", justify="right")
-                parent_table.add_column("Avg IoU", style="green", justify="right")
-                parent_table.add_column("Center Acc", style="green", justify="right")
-                parent_table.add_column("IoU@0.5", style="green", justify="right")
+            parent_table = Table(title="🗂️ Metrics by Region Parent (6 classes)", box=box.ROUNDED, show_header=True, header_style="bold yellow")
+            parent_table.add_column("Parent", style="cyan")
+            parent_table.add_column("Total", style="white", justify="right")
+            parent_table.add_column("Success Rate", style="green", justify="right")
+            parent_table.add_column("Avg IoU", style="green", justify="right")
+            parent_table.add_column("Center Acc", style="green", justify="right")
+            parent_table.add_column("IoU@0.5", style="green", justify="right")
             order = ['Primary Interface Containers',
                      'Global Navigation & Structure',
                      'Content & Data Display',
@@ -2179,46 +1768,126 @@ def main(args):
                 data = decomposed['by_region_parent'].get(parent, {})
                 if not data:
                     continue
-                if args.task_type in ('funccap', 'easy_funccap'):
-                    parent_table.add_row(
-                        parent,
-                        str(data.get('total', 0)),
-                        f"{data.get('success_rate', 0.0)*100:.1f}%",
-                        f"{data.get('accuracy', 0.0)*100:.1f}%"
-                    )
-                else:
-                    parent_table.add_row(
-                        parent,
-                        str(data.get('total', 0)),
-                        f"{data.get('success_rate', 0.0)*100:.1f}%",
-                        f"{data.get('avg_iou', 0.0):.3f}",
+                parent_table.add_row(
+                    parent,
+                    str(data.get('total', 0)),
+                    f"{data.get('success_rate', 0.0)*100:.1f}%",
+                    f"{data.get('avg_iou', 0.0):.3f}",
+                    f"{data.get('center_acc', 0.0)*100:.1f}%",
+                    f"{data.get('iou_thresholds', {}).get('iou@0.5', 0.0)*100:.1f}%"
+                )
+            console.print("\n")
+            console.print(parent_table)
+        
+        # Decomposed metrics tables
+        decomposed = metrics.get('decomposed', {})
+
+        # Density breakdown
+        if decomposed.get('by_density'):
+            density_table = Table(title="📊 Metrics by Density Class", box=box.ROUNDED, show_header=True, header_style="bold green")
+            density_table.add_column("Density", style="cyan")
+            density_table.add_column("Total", style="white", justify="right")
+            density_table.add_column("Success Rate", style="green", justify="right")
+            density_table.add_column("Avg IoU", style="green", justify="right")
+            density_table.add_column("Center Acc", style="green", justify="right")
+            density_table.add_column("IoU@0.5", style="green", justify="right")
+            
+            for density in ['sparse', 'medium', 'dense', 'unknown']:
+                if density in decomposed['by_density']:
+                    data = decomposed['by_density'][density]
+                    density_table.add_row(
+                        density.upper(),
+                        str(data['total']),
+                        f"{data['success_rate']*100:.1f}%",
+                        f"{data['avg_iou']:.3f}",
                         f"{data.get('center_acc', 0.0)*100:.1f}%",
                         f"{data.get('iou_thresholds', {}).get('iou@0.5', 0.0)*100:.1f}%"
                     )
+            
             console.print("\n")
-            console.print(parent_table)
+            console.print(density_table)
+        
+        # Number of similar elements breakdown
+        if decomposed.get('by_num_similar_elements'):
+            num_elem_table = Table(title="🔢 Metrics by Number of Similar Elements", box=box.ROUNDED, show_header=True, header_style="bold yellow")
+            num_elem_table.add_column("Num Elements", style="cyan")
+            num_elem_table.add_column("Total", style="white", justify="right")
+            num_elem_table.add_column("Success Rate", style="green", justify="right")
+            num_elem_table.add_column("Avg IoU", style="green", justify="right")
+            num_elem_table.add_column("Center Acc", style="green", justify="right")
+            num_elem_table.add_column("IoU@0.5", style="green", justify="right")
+            
+            for category in ['1-2', '3-4', '5-6', '7+', 'unknown']:
+                if category in decomposed['by_num_similar_elements']:
+                    data = decomposed['by_num_similar_elements'][category]
+                    num_elem_table.add_row(
+                        category,
+                        str(data['total']),
+                        f"{data['success_rate']*100:.1f}%" if data['total'] > 0 else "N/A",
+                        f"{data['avg_iou']:.3f}" if data['total'] > 0 else "N/A",
+                        f"{data.get('center_acc', 0.0)*100:.1f}%" if data['total'] > 0 else "N/A",
+                        f"{data.get('iou_thresholds', {}).get('iou@0.5', 0.0)*100:.1f}%" if data['total'] > 0 else "N/A"
+                    )
+            
+            console.print("\n")
+            console.print(num_elem_table)
+        
+        # Area class breakdown
+        if decomposed.get('by_area_class'):
+            area_table = Table(title="📐 Metrics by Area Class", box=box.ROUNDED, show_header=True, header_style="bold cyan")
+            area_table.add_column("Area Class", style="cyan")
+            area_table.add_column("Total", style="white", justify="right")
+            area_table.add_column("Success Rate", style="green", justify="right")
+            area_table.add_column("Avg IoU", style="green", justify="right")
+            area_table.add_column("Center Acc", style="green", justify="right")
+            area_table.add_column("IoU@0.5", style="green", justify="right")
+            
+            for area_class, data in decomposed['by_area_class'].items():
+                area_table.add_row(
+                    str(area_class),
+                    str(data.get('total', 0)),
+                    f"{data.get('success_rate', 0.0)*100:.1f}%" if data.get('total', 0) > 0 else "N/A",
+                    f"{data.get('avg_iou', 0.0):.3f}" if data.get('total', 0) > 0 else "N/A",
+                    f"{data.get('center_acc', 0.0)*100:.1f}%" if data.get('total', 0) > 0 else "N/A",
+                    f"{data.get('iou_thresholds', {}).get('iou@0.5', 0.0)*100:.1f}%" if data.get('total', 0) > 0 else "N/A"
+                )
+            console.print("\n")
+            console.print(area_table)
     else:
         # Fallback to simple printing if rich is not available
         debug_print(f"📊 Total Entries: {metrics['total']}", level="info")
         debug_print(f"✅ Successful: {metrics['successful']} ({metrics['success_rate']*100:.1f}%)", level="info")
-        if args.task_type in ('funccap', 'easy_funccap'):
-            debug_print(f"🎯 Accuracy: {metrics.get('accuracy', 0.0)*100:.1f}%", level="info")
-        else:
-            debug_print(f"📈 Average IoU: {metrics['avg_iou']:.3f}", level="info")
-            debug_print(f"🎯 Center Accuracy: {metrics.get('center_acc', 0.0)*100:.1f}%", level="info")
-            debug_print("\n📊 Accuracy at IoU Thresholds:", level="info")
-            for threshold, acc in metrics.get('iou_thresholds', {}).items():
-                debug_print(f"   {threshold}: {acc*100:.1f}%", level="info")
+        debug_print(f"📈 Average IoU: {metrics['avg_iou']:.3f}", level="info")
+        debug_print(f"🎯 Center Accuracy: {metrics.get('center_acc', 0.0)*100:.1f}%", level="info")
+        debug_print("\n📊 Accuracy at IoU Thresholds:", level="info")
+        for threshold, acc in metrics['iou_thresholds'].items():
+            debug_print(f"   {threshold}: {acc*100:.1f}%", level="info")
         
         if metrics.get('decomposed', {}).get('by_region_parent'):
             debug_print("\n📊 Metrics by Region Parent (6 classes):", level="info")
             for parent, data in metrics['decomposed']['by_region_parent'].items():
-                if args.task_type in ('funccap', 'easy_funccap'):
-                    debug_print(f"   {parent}: {data['success_rate']*100:.1f}% success, "
-                               f"Accuracy={data.get('accuracy', 0.0)*100:.1f}% ({data['successful']}/{data['total']})", level="info")
-                else:
-                    debug_print(f"   {parent}: {data['success_rate']*100:.1f}% success, "
-                               f"IoU={data['avg_iou']:.3f}, CenterAcc={data.get('center_acc', 0.0)*100:.1f}% ({data['successful']}/{data['total']})", level="info")
+                debug_print(f"   {parent}: {data['success_rate']*100:.1f}% success, "
+                           f"IoU={data['avg_iou']:.3f}, CenterAcc={data.get('center_acc', 0.0)*100:.1f}% ({data['successful']}/{data['total']})", level="info")
+        
+        # Print decomposed metrics
+        decomposed = metrics.get('decomposed', {})
+        if decomposed.get('by_density'):
+            debug_print("\n📊 Metrics by Density Class:", level="info")
+            for density, data in decomposed['by_density'].items():
+                debug_print(f"   {density.upper()}: {data['success_rate']*100:.1f}% success, "
+                           f"IoU={data['avg_iou']:.3f}, CenterAcc={data.get('center_acc', 0.0)*100:.1f}% ({data['successful']}/{data['total']})", level="info")
+        
+        if decomposed.get('by_num_similar_elements'):
+            debug_print("\n🔢 Metrics by Number of Similar Elements:", level="info")
+            for category, data in decomposed['by_num_similar_elements'].items():
+                debug_print(f"   {category}: {data['success_rate']*100:.1f}% success, "
+                           f"IoU={data['avg_iou']:.3f}, CenterAcc={data.get('center_acc', 0.0)*100:.1f}% ({data['successful']}/{data['total']})", level="info")
+        
+        if decomposed.get('by_area_class'):
+            debug_print("\n📐 Metrics by Area Class:", level="info")
+            for area_class, data in decomposed['by_area_class'].items():
+                debug_print(f"   {area_class.upper()}: {data['success_rate']*100:.1f}% success, "
+                           f"IoU={data['avg_iou']:.3f}, CenterAcc={data.get('center_acc', 0.0)*100:.1f}% ({data['successful']}/{data['total']})", level="info")
     
     debug_print(f"\n💾 Results saved to: {result_file}", level="info")
     if checkpoint_file != result_file:
@@ -2227,7 +1896,7 @@ def main(args):
         debug_print(f"💾 Checkpoint and results in same file: {result_file}", level="info")
     debug_print("═" * 60, level="title")
 
-
+ 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Evaluate VLMs on Functional Region Grounding tasks",
@@ -2235,39 +1904,30 @@ if __name__ == "__main__":
         epilog="""
 Examples:
   # Evaluate using JSON file:
-  python eval_funcgnd_mp.py --questions-file /path/to/grounding_questions.json --model gpt-4o
+  python eval_funcregion_gnd_mp.py --questions-file /path/to/grounding_questions.json --model gpt-4o
   
   # Evaluate using HuggingFace dataset:
-  python eval_funcgnd_mp.py --hf-dataset-id username/dataset-name --model gpt-4o --hf-split test
+  python eval_funcregion_gnd_mp.py --hf-dataset-id HongxinLi/AutoGUIv2-FuncRegionGnd-v2 --model gpt-4o --hf-split test
   
   # With checkpointing:
-  python eval_funcgnd_mp.py --hf-dataset-id username/dataset-name --model gpt-4o --load-latest
+  python eval_funcregion_gnd_mp.py --hf-dataset-id HongxinLi/AutoGUIv2-FuncRegionGnd-v2 --model gpt-4o --load-latest
         """
     )
 
     # Task selection
-    parser.add_argument("--task-type", type=str, choices=['funcgnd', 'descgnd', 'funccap', 'easy_funccap'], default='funccap',
-                        help="Task type to evaluate (functional grounding, description grounding, functionality captioning, or Easy Funccap)")
+    parser.add_argument("--task-type", type=str, choices=['funcgnd', 'descgnd'], default='funcgnd',
+                        help="Task type to evaluate (functional or description grounding)")
     # Data source - mutually exclusive: JSON vs HF dataset
     source_group = parser.add_mutually_exclusive_group(required=False)
     source_group.add_argument("--questions-file", type=str, default=None,
                               help="Path to questions JSON file (from 2_generate_func_elemgnd_questions.py) or glob pattern")
-    # Default dataset ID based on task type
-    args_pre, _ = parser.parse_known_args()
-    task_type_pre = getattr(args_pre, 'task_type', 'funccap')
-    if task_type_pre == 'funccap':
-        default_dataset_id = 'HongxinLi/AutoGUIv2-FuncRegionCap'
-    elif task_type_pre == 'easy_funccap':
-        default_dataset_id = None
-    else:
-        default_dataset_id = 'HongxinLi/AutoGUIv2-FuncRegionGnd'
-    source_group.add_argument("--hf-dataset-id", type=str, default=default_dataset_id, help="HuggingFace dataset ID (e.g., 'username/dataset-name')")
+    source_group.add_argument("--hf-dataset-id", type=str, default='HongxinLi/AutoGUIv2-FuncRegionGnd-v2', help="HuggingFace dataset ID (e.g., 'username/dataset-name')")
 
     # HuggingFace specific arguments
     parser.add_argument("--hf-split", type=str, default='test',
                        help="Dataset split to load from HuggingFace (default: 'test')")
-    parser.add_argument("--hf-cache-dir", type=str, default='/mnt/vdb1/hongxin_li/AutoGUIv2/hf_dataset_cache/FuncRegionCap/',
-                       help="Cache directory for HuggingFace datasets")
+    parser.add_argument("--hf-cache-dir", type=str, default=None,
+                       help="Optional local dataset cache directory produced by datasets.save_to_disk")
 
     # Model arguments
     parser.add_argument("--model", type=str, default=[
@@ -2277,15 +1937,22 @@ Examples:
             'o3',
             'qwen3-vl-32b-thinking',
             'qwen3-vl-32b-instruct',
-            'qwen3-vl-8b-instruct',
-            'qwen2-vl-72b-instruct',
             'qwen-vl-max-latest',
+            'qwen2-vl-72b-instruct',
+            'qwen3-vl-8b-instruct',
             'ByteDance-Seed/UI-TARS-1.5-7B',
             'OS-Copilot/OS-Atlas-Base-7B',
+            'xlangai/OpenCUA-7B',
+            'xlangai/Jedi-7B-1080p',
+            'Hcompany/Holo2-8B',
+            'Hcompany/Holo1.5-7B',
+            'inclusionAI/UI-Venus-Ground-7B',
+            'ritzzai/GUI-R1-7B',
+            'InfiX-ai/InfiGUI-G1-7B',
             'step-3',
             'zai-org/GLM-4.5V'
-        ][-7],
-                       help="Model name (e.g., 'gpt-4o', 'gemini-2.5-pro-thinking', 'qwen3-vl-8b-instruct', 'qwen3-vl-32b-instruct')")
+        ][-6],
+                       help="Model name (e.g., 'gpt-4o', 'gemini-2.5-pro-thinking', 'qwen3-vl-8b-instruct', 'xlangai/OpenCUA-7B', 'Hcompany/Holo2-8B')")
     parser.add_argument("--base-url", type=str, default=None,
                        help="API base URL (uses OPENAI_API_BASE env var if not provided)")
     parser.add_argument("--api-key", type=str, default=None,
@@ -2316,4 +1983,3 @@ Examples:
     multiprocessing.set_start_method('spawn', force=True)
     
     main(args)
-

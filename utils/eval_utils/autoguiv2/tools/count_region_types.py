@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
+import argparse
 import os
 import json
 from typing import Any, Iterable, List, Tuple, Dict
 from collections import Counter
 import sys
+from pathlib import Path
 
 
-DIRECTORIES: List[str] = [
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/osworld_g/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/screenspot_pro/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/agentnet/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/amex/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/agentnet/FuncRegion/grounding_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/amex/FuncRegion/grounding_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/osworld_g/FuncRegion/grounding_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/screenspot_pro/FuncRegion/grounding_mode",
-]
+DIRECTORIES: List[str] = []
 
 
 # ===== 6-class taxonomy mapping helpers =====
@@ -35,10 +28,12 @@ def build_leaf_to_parent_mapping() -> Dict[str, str]:
     Anything not in this mapping will be assigned to 'Others'.
     """
     try:
-        # Ensure repository root is importable
-        repo_root = "/mnt/nvme0n1p1/hongxin_li/highres_autogui"
-        if repo_root not in sys.path:
-            sys.path.append(repo_root)
+        # Ensure repository root is importable when this file is run directly.
+        for parent in Path(__file__).resolve().parents:
+            taxonomy_path = parent / "utils" / "data_utils" / "autoguiv2" / "classify_region_types" / "classify_functional_regions.py"
+            if taxonomy_path.exists() and str(parent) not in sys.path:
+                sys.path.append(str(parent))
+                break
         from utils.data_utils.autoguiv2.classify_region_types.classify_functional_regions import TAXONOMY  # type: ignore
     except Exception:
         return {}
@@ -202,10 +197,24 @@ def print_parent_summary(title: str, parent_counter: Counter) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Count region_type values in generated FuncRegion JSON files."
+    )
+    parser.add_argument(
+        "directories",
+        nargs="*",
+        default=DIRECTORIES,
+        help="Directories to scan recursively. Pass captioning_mode/grounding_mode directories explicitly.",
+    )
+    args = parser.parse_args()
+
     all_counter: Counter = Counter()
     dir_stats: List[Tuple[str, Counter, int, int]] = []
 
-    for d in DIRECTORIES:
+    if not args.directories:
+        parser.error("Please provide at least one directory to scan.")
+
+    for d in args.directories:
         if not os.path.isdir(d):
             print(f"[警告] 目录不存在，跳过：{d}")
             continue
@@ -229,5 +238,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

@@ -1,30 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Generate hard functional region captioning questions with multiple correct answers (2-4) from different perspectives.
+Generate hard functional region captioning questions.
 
-This script:
-1. Loads questions from 4 captioning_mode directories
-2. Extracts the functionality from the original correct option
-3. Uses Gemini to generate 2-4 correct descriptions from DIFFERENT PERSPECTIVES:
-   - Each description is correct but focuses on a different aspect (intent vs. action, input vs. output, etc.)
-   - NOT semantically equivalent (avoids models guessing by finding similar options)
-   - Forces models to truly understand the functionality, not just match text patterns
-4. Normalizes and adds model prediction errors as distractors
-5. Generates three types of adversarial distractors:
-   - Minimal-pair distractors: 70%+ vocabulary overlap, only 1 semantic slot changed
-   - Contrastive-pair distractors: Mirror-image opposites (increases/decreases, includes/excludes)
-   - Normal distractors: Same outcome different target/scope (prioritized confusion strategies)
-6. Reranks candidate distractors to select the hardest ones (total 7 options = N correct + M distractors)
-7. Creates 7-option questions (A-G) with 2-4 correct answers from different perspectives
+The script supports two answer formats:
+- single: one correct answer among six options (public FuncRegionCap-v2 format)
+- multi: 2-4 correct answers among seven options (research variant)
 
-Key Features:
-- Multi-answer questions (2-4 correct options out of 7 total)
-- Correct options describe same functionality from different angles (not paraphrases)
-- Intent+outcome focused descriptions (avoid UI control names and locations)
-- Multi-stage adversarial generation with quality control
-- No generic fallback distractors (maintains high quality or skips question)
-- Dynamic distractor count based on number of correct options generated
+Both modes use the same adversarial distractor pipeline: refined correct
+functional descriptions, model-error distractors, generated minimal pairs,
+contrastive pairs, and reranking for hardness.
 """
 
 import os
@@ -42,7 +27,7 @@ from tqdm import tqdm
 
 # Import utilities
 import sys
-sys.path.append('/'.join(__file__.split('/')[:-4]))
+sys.path.append('/'.join(__file__.split('/')[:-5]))
 from utils.openai_utils.openai import OpenAIModel
 
 # Colorized output support
@@ -60,19 +45,13 @@ except Exception:
 # Set random seed for reproducibility
 random.seed(42)
 
-# Source directories
-SOURCE_DIRS = [
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/osworld_g/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/screenspot_pro/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/agentnet/FuncRegion/captioning_mode",
-    "/mnt/vdb1/hongxin_li/AutoGUIv2/amex/FuncRegion/captioning_mode"
-]
-
-# Eval results directory (load all JSON files from this directory)
-EVAL_RESULTS_DIR = "/mnt/nvme0n1p1/hongxin_li/highres_autogui/utils/data_utils/autoguiv2/FuncElemQA_eval_gen/eval/eval_results/funccap/gemini-2.5-pro-thinking/"
+SOURCE_DIRS = []
+EVAL_RESULTS_DIR = None
 
 # Unified question text
-UNIFIED_QUESTION = "Which options accurately describe the functionality of the region marked with a red rectangle? (Select all that apply)"
+SINGLE_QUESTION = "Which option most accurately describes the functionality of the region marked with a red rectangle?"
+MULTI_QUESTION = "Which options accurately describe the functionality of the region marked with a red rectangle? (Select all that apply)"
+UNIFIED_QUESTION = SINGLE_QUESTION
 
 # Prompts for Gemini
 REFINE_CORRECT_OPTION_PROMPT = """You are a GUI expert. Your task is to refine the description of a UI region's functionality to make it more abstract and outcome-focused.
@@ -572,7 +551,7 @@ def load_eval_results(eval_dir: str, debug: bool = False) -> Dict[str, Dict]:
                         total_errors += 1
                     
                     # Extract dataset name from image_path
-                    # e.g., "/mnt/vdb1/hongxin_li/AutoGUIv2/osworld_g/FuncRegion/..." -> "osworld_g"
+                    # e.g., "/data/AutoGUIv2/osworld_g/FuncRegion/..." -> "osworld_g"
                     dataset_name = None
                     if image_path:
                         path_parts = image_path.split('/')
@@ -1189,8 +1168,10 @@ def generate_distractors(model: OpenAIModel, correct_option_context: str,
         return []
 
 
-def process_question(question: Dict, eval_results: Dict[str, Dict],
-                    model: OpenAIModel, debug: bool = False) -> Dict:
+def process_question_multi(question: Dict, eval_results: Dict[str, Dict],
+                           model: OpenAIModel, min_correct: int = 2,
+                           max_correct: int = 4, num_options: int = 7,
+                           debug: bool = False) -> Dict:
     """Process a single question to create hard version with multiple correct answers (2-4)."""
     
     entry_id = question.get('entry_id', '')
@@ -1226,7 +1207,7 @@ def process_question(question: Dict, eval_results: Dict[str, Dict],
         return None
     
     # Randomly decide how many correct options to generate (2-4)
-    num_correct_to_generate = random.randint(2, 4)
+    num_correct_to_generate = random.randint(min_correct, max_correct)
     
     if debug:
         debug_print(f"  Generating {num_correct_to_generate} correct options from different perspectives for {entry_id}", level="info")
@@ -1308,7 +1289,7 @@ def process_question(question: Dict, eval_results: Dict[str, Dict],
                 debug_print(f"  Collected {len(pred_answer_distractors)} unique normalized pred_answer(s)", level="success")
     
     # Step 3: Generate additional distractors using Gemini (adversarial generation with multiple strategies)
-    # Total options = 7 (N correct + M distractors)
+    # Total options = num_options (N correct + M distractors)
     # New strategy: Generate distractors FOR EACH correct option to ensure full coverage
     #   - For each of N correct options:
     #       * 2 minimal-pair distractors (70%+ overlap, 1 slot changed)
@@ -1318,10 +1299,10 @@ def process_question(question: Dict, eval_results: Dict[str, Dict],
     #   - P normalized pred_answers (from eval files)
     # Total candidates: N*3 + 4 + P, then rerank to select top (7 - N)
     num_correct = len(refined_correct_options)
-    num_distractors_needed = 7 - num_correct  # Need (7 - num_correct) distractors
+    num_distractors_needed = num_options - num_correct
     
     if debug:
-        debug_print(f"  Need {num_distractors_needed} distractors (7 total - {num_correct} correct)", level="info")
+        debug_print(f"  Need {num_distractors_needed} distractors ({num_options} total - {num_correct} correct)", level="info")
     
     if debug:
         debug_print(f"  Step 3a: Generating candidate distractors for each correct option...", level="step")
@@ -1466,14 +1447,14 @@ def process_question(question: Dict, eval_results: Dict[str, Dict],
     all_distractors = all_distractors[:num_distractors_needed]
     
     # Build final question
-    # Combine all options (N correct + M distractors = 7 total)
+    # Combine all options (N correct + M distractors = num_options total)
     all_options = refined_correct_options + all_distractors
     
     # Shuffle and assign labels (but track which are correct)
     random.shuffle(all_options)
     
-    # Assign labels A, B, C, D, E, F, G
-    option_labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+    # Assign labels A, B, C, ...
+    option_labels = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")[:num_options]
     correct_answers = []
     
     for i, opt in enumerate(all_options):
@@ -1485,7 +1466,7 @@ def process_question(question: Dict, eval_results: Dict[str, Dict],
     correct_answers.sort()
     
     if debug:
-        debug_print(f"  Final question: {len(correct_answers)} correct answers out of 7 total options", level="success")
+        debug_print(f"  Final question: {len(correct_answers)} correct answers out of {num_options} total options", level="success")
     
     # Build final question dict
     final_question = {
@@ -1493,7 +1474,7 @@ def process_question(question: Dict, eval_results: Dict[str, Dict],
         'source_dataset': source_dataset,
         'source_file': question.get('source_file', ''),
         'annotated_image_path': annotated_image_path,
-        'question': UNIFIED_QUESTION,
+        'question': MULTI_QUESTION,
         'options': all_options,
         'correct_answers': correct_answers,  # List of correct answer labels
         'num_correct': len(correct_answers),
@@ -1511,7 +1492,282 @@ def process_question(question: Dict, eval_results: Dict[str, Dict],
     return final_question
 
 
-def balance_correct_answers(questions: List[Dict]) -> List[Dict]:
+def process_question_single(question: Dict, eval_results: Dict[str, Dict],
+                            model: OpenAIModel, debug: bool = False) -> Dict:
+    """Process a single question to create hard version."""
+    
+    entry_id = question.get('entry_id', '')
+    source_dataset = question.get('source_dataset', '')
+    annotated_image_path = question.get('annotated_image_path', '')
+    group_id = question.get('group_id', -1)
+    
+    # Get correct answer
+    correct_answer_label = question.get('correct_answer', '')
+    options = question.get('options', [])
+    
+    # Find correct option
+    correct_option = None
+    for opt in options:
+        if opt.get('label', '') == correct_answer_label:
+            correct_option = opt
+            break
+    
+    if not correct_option:
+        if debug:
+            debug_print(f"Warning: No correct option found for {entry_id}", level="warn")
+        return None
+    
+    # Extract correct option information
+    region_id = correct_option.get('region_id', '')
+    region_type = correct_option.get('region_type', 'Unknown')
+    functionality = correct_option.get('functionality', '')
+    original_option_context = correct_option.get('option_context', '')
+    metrics = correct_option.get('metrics', {})
+    
+    # Step 1: Refine correct option using Gemini
+    if debug:
+        debug_print(f"  Refining correct option for {entry_id}...", level="step")
+    
+    refined_option_context = refine_correct_option(
+        model, original_option_context, functionality,
+        annotated_image_path, debug=debug
+    )
+    
+    # Step 2: Check if there are prediction errors for this entry and normalize them
+    eval_result = eval_results.get(entry_id)
+    pred_answer_distractors = []  # List to store all normalized pred_answers
+    
+    # Check if we have pred_answers (more robust than checking is_correct flag)
+    if eval_result:
+        # Get all pred_answers for this entry (may be multiple from different eval files)
+        pred_answers = eval_result.get('pred_answers', [])
+        
+        if len(pred_answers) > 0:
+            if debug:
+                debug_print(f"  Found {len(pred_answers)} prediction error(s) from eval files", level="info")
+            
+            # Normalize each unique pred_answer
+            for pred_answer in pred_answers:
+                if pred_answer and pred_answer != original_option_context:
+                    if debug:
+                        debug_print(f"    Normalizing pred_answer: {pred_answer[:50]}...", level="info")
+                    
+                    # Normalize the prediction to match the style of refined correct option
+                    normalized_pred = normalize_pred_answer(
+                        model, pred_answer, refined_option_context, functionality,
+                        annotated_image_path, debug=debug
+                    )
+                    
+                    # Add to list if not already present (additional deduplication after normalization)
+                    if normalized_pred and normalized_pred not in pred_answer_distractors:
+                        pred_answer_distractors.append(normalized_pred)
+                        
+                        if debug:
+                            debug_print(f"    Normalized to: {normalized_pred[:50]}...", level="info")
+            
+            if debug:
+                debug_print(f"  Collected {len(pred_answer_distractors)} unique normalized pred_answer(s)", level="success")
+    
+    # Step 3: Generate additional distractors using Gemini (adversarial generation with multiple strategies)
+    # Changed from 3 to 5 distractors to support 6-option questions
+    # Use mixed adversarial strategy: 
+    #   - N normalized pred_answers (from multiple eval files)
+    #   - 8 minimal-pair distractors (70%+ overlap, 1 slot changed)
+    #   - 4 contrastive-pair distractors (2 pairs of opposites)
+    #   - 4 normal distractors (related but wrong)
+    # Total: N+16 candidates, then rerank to select top 5
+    num_pred_distractors = len(pred_answer_distractors)
+    num_needed_distractors = 5 - num_pred_distractors  # Adjust based on how many pred_answers we have
+    
+    # Ensure we need at least 1 more distractor
+    if num_needed_distractors <= 0:
+        num_needed_distractors = 1  # Always generate some, we'll rerank everything
+    
+    if debug:
+        debug_print(f"  Step 3a: Generating mixed candidate distractors for {entry_id}...", level="step")
+    
+    # Step 3a-1: Generate 8 minimal-pair distractors
+    if debug:
+        debug_print(f"    - Generating 8 minimal-pair distractors (70%+ overlap, 1 slot change)...", level="info")
+    minimal_pair_distractors = generate_minimal_pair_distractors(
+        model, refined_option_context, functionality,
+        annotated_image_path, num_distractors=8, debug=debug
+    )
+    if debug:
+        debug_print(f"    - Collected {len(minimal_pair_distractors)} minimal-pair distractors", level="info")
+    
+    # Step 3a-2: Generate 2 pairs (4 distractors) of contrastive opposites
+    if debug:
+        debug_print(f"    - Generating 2 contrastive pairs (4 opposite distractors)...", level="info")
+    contrastive_pair_distractors = generate_contrastive_pair_distractors(
+        model, refined_option_context, functionality,
+        annotated_image_path, num_pairs=2, debug=debug
+    )
+    if debug:
+        debug_print(f"    - Collected {len(contrastive_pair_distractors)} contrastive-pair distractors", level="info")
+    
+    # Step 3a-3: Generate 4 normal distractors (prioritized strategies)
+    if debug:
+        debug_print(f"    - Generating 4 normal distractors (same outcome/different target)...", level="info")
+    normal_distractors = generate_distractors(
+        model, refined_option_context, functionality, region_type,
+        annotated_image_path, num_distractors=4, debug=debug
+    )
+    if debug:
+        debug_print(f"    - Collected {len(normal_distractors)} normal distractors", level="info")
+    
+    # Combine all candidate distractors (including pred_answers + generated ones)
+    # Pred_answers are already normalized, add them to the candidate pool
+    candidate_distractors = (
+        pred_answer_distractors +  # Normalized pred_answers from multiple eval files
+        minimal_pair_distractors + 
+        contrastive_pair_distractors + 
+        normal_distractors
+    )
+    
+    if debug:
+        debug_print(f"  Total candidate pool: {len(candidate_distractors)} distractors", level="info")
+        debug_print(f"    - {len(pred_answer_distractors)} from normalized pred_answers", level="info")
+        debug_print(f"    - {len(minimal_pair_distractors)} minimal-pair", level="info")
+        debug_print(f"    - {len(contrastive_pair_distractors)} contrastive-pair", level="info")
+        debug_print(f"    - {len(normal_distractors)} normal", level="info")
+    
+    # Step 3b: Rerank and select the hardest 5 distractors from all candidates
+    if debug:
+        debug_print(f"  Step 3b: Reranking to select top 5 hardest distractors from {len(candidate_distractors)} candidates...", level="step")
+    
+    # Always select top 5 (regardless of how many pred_answers we have)
+    generated_distractors = rerank_distractors(
+        model, candidate_distractors, [refined_option_context], functionality,
+        annotated_image_path, num_to_select=5,
+        debug=debug
+    )
+    
+    if debug:
+        debug_print(f"  Selected {len(generated_distractors)} hardest distractors after reranking", level="success")
+    
+    # Build distractor list from reranked distractors
+    # The reranked list already includes pred_answers (if any), so we need to identify source
+    all_distractors = []
+    
+    # Convert pred_answer_distractors to set for quick lookup
+    pred_answer_set = set(pred_answer_distractors)
+    
+    # Add reranked distractors with appropriate source labels
+    for distractor_text in generated_distractors:
+        if distractor_text in pred_answer_set:
+            # This distractor came from normalized pred_answer
+            all_distractors.append({
+                'option_context': distractor_text,
+                'is_correct': False,
+                'source': 'reranked_pred_answer_normalized'
+            })
+        else:
+            # This distractor came from Gemini generation
+            all_distractors.append({
+                'option_context': distractor_text,
+                'is_correct': False,
+                'source': 'reranked_gemini_generated'
+            })
+    
+    # Ensure we have exactly 5 distractors
+    if len(all_distractors) < 5:
+        if debug:
+            debug_print(f"  Warning: Only {len(all_distractors)} distractors for {entry_id}, attempting to fill from candidates", level="warn")
+        
+        # Extract already used distractor texts
+        used_distractor_texts = set([d['option_context'] for d in all_distractors])
+        
+        # Find unused candidates from the original candidate pool
+        unused_candidates = [
+            d for d in candidate_distractors 
+            if d not in used_distractor_texts
+        ]
+        
+        if len(unused_candidates) > 0:
+            # Randomly select from unused candidates to fill up to 5
+            needed = 5 - len(all_distractors)
+            random.shuffle(unused_candidates)
+            selected_backups = unused_candidates[:needed]
+            
+            for backup_text in selected_backups:
+                all_distractors.append({
+                    'option_context': backup_text,
+                    'is_correct': False,
+                    'source': 'candidate_backup'
+                })
+            
+            if debug:
+                debug_print(f"  Filled {len(selected_backups)} distractors from unused candidates", level="info")
+        
+        # If still not enough, log error and skip this question
+        if len(all_distractors) < 5:
+            if debug:
+                debug_print(f"  ERROR: Cannot fill 5 distractors for {entry_id}, only have {len(all_distractors)}. Skipping this question.", level="error")
+            return None
+    
+    # Take first 5 distractors if we have more
+    all_distractors = all_distractors[:5]
+    
+    # Build final question
+    # Create correct option dict
+    correct_option_dict = {
+        'option_context': refined_option_context,
+        'is_correct': True,
+        'region_id': region_id,
+        'region_type': region_type,
+        'functionality': functionality,
+        'metrics': metrics,
+        'source': 'ground_truth_refined'
+    }
+    
+    # Combine all options (1 correct + 5 distractors)
+    all_options = [correct_option_dict] + all_distractors
+    
+    # Shuffle and assign labels (but track which is correct)
+    random.shuffle(all_options)
+    
+    # Assign labels A, B, C, D, E, F
+    option_labels = ['A', 'B', 'C', 'D', 'E', 'F']
+    for i, opt in enumerate(all_options):
+        opt['label'] = option_labels[i]
+        if opt.get('is_correct', False):
+            final_correct_answer = option_labels[i]
+    
+    # Build final question dict
+    final_question = {
+        'entry_id': entry_id,
+        'source_dataset': source_dataset,
+        'source_file': question.get('source_file', ''),
+        'annotated_image_path': annotated_image_path,
+        'question': SINGLE_QUESTION,
+        'options': all_options,
+        'correct_answer': final_correct_answer,
+        'group_id': group_id,
+        'original_question_data': {
+            'original_correct_option': original_option_context
+        }
+    }
+    
+    return final_question
+
+
+
+def process_question(question: Dict, eval_results: Dict, model: OpenAIModel,
+                     answer_mode: str = "single", min_correct: int = 2,
+                     max_correct: int = 4, num_options: int = 7,
+                     debug: bool = False) -> Dict:
+    """Dispatch to the requested hard-captioning answer format."""
+    if answer_mode == "multi":
+        return process_question_multi(
+            question, eval_results, model,
+            min_correct=min_correct, max_correct=max_correct,
+            num_options=num_options, debug=debug
+        )
+    return process_question_single(question, eval_results, model, debug=debug)
+
+
+def balance_multi_correct_answers(questions: List[Dict]) -> List[Dict]:
     """
     Ensure correct answers are reasonably distributed across positions.
     For multi-answer questions, we just verify the distribution is reasonable.
@@ -1541,17 +1797,95 @@ def balance_correct_answers(questions: List[Dict]) -> List[Dict]:
 
 
 
+def balance_single_correct_answers(questions: List[Dict]) -> List[Dict]:
+    """Ensure correct answers are evenly distributed across A/B/C/D/E/F."""
+    
+    # Count current distribution
+    answer_counts = defaultdict(int)
+    for q in questions:
+        answer_counts[q['correct_answer']] += 1
+    
+    debug_print(f"Original distribution: {dict(answer_counts)}", level="info")
+    
+    # Target distribution (as even as possible)
+    total = len(questions)
+    target_per_answer = total // 6
+    remainder = total % 6
+    
+    targets = {
+        'A': target_per_answer + (1 if remainder > 0 else 0),
+        'B': target_per_answer + (1 if remainder > 1 else 0),
+        'C': target_per_answer + (1 if remainder > 2 else 0),
+        'D': target_per_answer + (1 if remainder > 3 else 0),
+        'E': target_per_answer + (1 if remainder > 4 else 0),
+        'F': target_per_answer
+    }
+    
+    debug_print(f"Target distribution: {targets}", level="info")
+    
+    # Re-shuffle options to balance distribution
+    balanced_questions = []
+    answer_assignments = ['A'] * targets['A'] + ['B'] * targets['B'] + ['C'] * targets['C'] + ['D'] * targets['D'] + ['E'] * targets['E'] + ['F'] * targets['F']
+    random.shuffle(answer_assignments)
+    
+    for i, question in enumerate(questions):
+        target_answer = answer_assignments[i]
+        
+        # Find which option is currently correct
+        current_correct_idx = None
+        for idx, opt in enumerate(question['options']):
+            if opt.get('is_correct', False):
+                current_correct_idx = idx
+                break
+        
+        # If we need to change the correct answer position
+        if question['correct_answer'] != target_answer:
+            # Find target position
+            target_idx = ['A', 'B', 'C', 'D', 'E', 'F'].index(target_answer)
+            
+            # Swap options
+            if current_correct_idx is not None and target_idx < len(question['options']):
+                options = question['options'][:]
+                options[current_correct_idx], options[target_idx] = options[target_idx], options[current_correct_idx]
+                
+                # Update labels
+                for j, opt in enumerate(options):
+                    opt['label'] = ['A', 'B', 'C', 'D', 'E', 'F'][j]
+                
+                question['options'] = options
+                question['correct_answer'] = target_answer
+        
+        balanced_questions.append(question)
+    
+    # Verify new distribution
+    new_counts = defaultdict(int)
+    for q in balanced_questions:
+        new_counts[q['correct_answer']] += 1
+    
+    debug_print(f"New distribution: {dict(new_counts)}", level="success")
+    
+    return balanced_questions
+
+
+def balance_correct_answers(questions: List[Dict], answer_mode: str = "single") -> List[Dict]:
+    if answer_mode == "multi":
+        return balance_multi_correct_answers(questions)
+    return balance_single_correct_answers(questions)
+
+
 def save_checkpoint(output_file: str, processed_questions: List[Dict], 
-                   source_dirs: List[str], model_name: str, eval_dir: str) -> None:
+                   source_dirs: List[str], model_name: str, eval_dir: str,
+                   answer_mode: str = "single") -> None:
     """Save current progress to output file."""
     output_data = {
         'metadata': {
             'total_questions': len(processed_questions),
             'generation_date': datetime.now().strftime("%Y-%m-%d"),
-            'description': 'Hard functional region captioning questions with reduced hints',
+            'description': f'Hard functional region captioning questions ({answer_mode} answer mode)',
             'source_datasets': [Path(d).parent.parent.name for d in source_dirs],
             'gemini_model': model_name,
             'eval_results_dir': eval_dir,
+            'answer_mode': answer_mode,
             'checkpoint': True,
             'is_checkpoint': True  # Flag to indicate this is a checkpoint
         },
@@ -1566,7 +1900,9 @@ def save_checkpoint(output_file: str, processed_questions: List[Dict],
         import shutil
         shutil.copy2(output_file, backup_file)
     
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    output_dir = os.path.dirname(output_file)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
 
@@ -1598,10 +1934,17 @@ def main(args):
     """Main processing function."""
     
     debug_print("=" * 60, level="title")
-    debug_print("Hard Functional Region Captioning QA Generation", level="title")
+    debug_print(f"Hard Functional Region Captioning QA Generation ({args.answer_mode})", level="title")
     debug_print("=" * 60, level="title")
     debug_print("", level="info")
     
+    if args.output_file is None:
+        args.output_file = "func_region_cap_hard_multi.json" if args.answer_mode == "multi" else "func_region_cap_hard.json"
+
+    if args.answer_mode == "multi":
+        if args.min_correct < 1 or args.max_correct < args.min_correct or args.max_correct >= args.num_options:
+            raise ValueError("For multi mode, require 1 <= min_correct <= max_correct < num_options")
+
     # Load checkpoint if resume mode is enabled
     processed_questions = []
     processed_entry_ids = set()
@@ -1627,14 +1970,18 @@ def main(args):
     debug_print(f"Model initialized: {args.model}", level="success")
     debug_print("", level="info")
     
-    # Load eval results
-    debug_print("Loading evaluation results...", level="step")
-    eval_results = load_eval_results(EVAL_RESULTS_DIR, debug=args.debug)
-    debug_print("", level="info")
+    # Load eval results when provided. These are optional hard-negative sources.
+    if args.eval_results_dir:
+        debug_print("Loading evaluation results...", level="step")
+        eval_results = load_eval_results(args.eval_results_dir, debug=args.debug)
+        debug_print("", level="info")
+    else:
+        eval_results = {}
+        debug_print("No evaluation results directory provided; using generated distractors only.", level="info")
     
     # Load all questions
     debug_print("Loading questions from source directories...", level="step")
-    all_questions = load_all_questions(SOURCE_DIRS, debug=args.debug)
+    all_questions = load_all_questions(args.source_dirs, debug=args.debug)
     
     if not all_questions:
         debug_print("Error: No questions loaded", level="error")
@@ -1658,7 +2005,12 @@ def main(args):
         for idx, question in enumerate(questions_to_process):
             try:
                 processed = process_question(
-                    question, eval_results, model, debug=args.debug
+                    question, eval_results, model,
+                    answer_mode=args.answer_mode,
+                    min_correct=args.min_correct,
+                    max_correct=args.max_correct,
+                    num_options=args.num_options,
+                    debug=args.debug
                 )
                 
                 if processed:
@@ -1670,7 +2022,7 @@ def main(args):
                 if args.resume and (idx + 1) % checkpoint_interval == 0:
                     if args.debug:
                         debug_print(f"Saving checkpoint at {idx + 1}/{len(questions_to_process)}", level="info")
-                    save_checkpoint(args.output_file, processed_questions, SOURCE_DIRS, args.model, EVAL_RESULTS_DIR)
+                    save_checkpoint(args.output_file, processed_questions, args.source_dirs, args.model, args.eval_results_dir or "", args.answer_mode)
                 
                 # Small delay to avoid rate limiting
                 time.sleep(0.1)
@@ -1685,7 +2037,7 @@ def main(args):
     
     # Balance correct answers
     debug_print("Balancing correct answer distribution...", level="step")
-    balanced_questions = balance_correct_answers(processed_questions)
+    balanced_questions = balance_correct_answers(processed_questions, args.answer_mode)
     debug_print("", level="info")
     
     # Build output
@@ -1693,18 +2045,26 @@ def main(args):
         'metadata': {
             'total_questions': len(balanced_questions),
             'generation_date': datetime.now().strftime("%Y-%m-%d"),
-            'description': 'Hard functional region captioning questions with 2-4 correct answers and 7 total options (A-G)',
-            'question_format': 'Multi-answer: 2-4 correct options out of 7 total (A/B/C/D/E/F/G)',
-            'source_datasets': [Path(d).parent.parent.name for d in SOURCE_DIRS],
+            'description': f'Hard functional region captioning questions ({args.answer_mode} answer mode)',
+            'question_format': ('Single-answer: 1 correct option out of 6 total (A/B/C/D/E/F)'
+                                if args.answer_mode == 'single'
+                                else f'Multi-answer: {args.min_correct}-{args.max_correct} correct options out of {args.num_options} total'),
+            'answer_mode': args.answer_mode,
+            'num_options': args.num_options,
+            'min_correct': args.min_correct if args.answer_mode == 'multi' else 1,
+            'max_correct': args.max_correct if args.answer_mode == 'multi' else 1,
+            'source_datasets': [Path(d).parent.parent.name for d in args.source_dirs],
             'gemini_model': args.model,
-            'eval_results_dir': EVAL_RESULTS_DIR
+            'eval_results_dir': args.eval_results_dir
         },
         'questions': balanced_questions
     }
     
     # Save output
     output_file = args.output_file
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    output_dir = os.path.dirname(output_file)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
@@ -1722,9 +2082,20 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
-    parser.add_argument("--output-file", type=str,
-                       default="/mnt/vdb1/hongxin_li/AutoGUIv2/func_region_cap_hard.json",
-                       help="Output JSON file path")
+    parser.add_argument("--output-file", type=str, default=None,
+                       help="Output JSON file path. Defaults to func_region_cap_hard.json or func_region_cap_hard_multi.json based on --answer-mode")
+    parser.add_argument("--answer-mode", type=str, choices=["single", "multi"], default="single",
+                       help="Question format: single keeps the public FuncRegionCap-v2 schema; multi generates a multi-answer variant")
+    parser.add_argument("--num-options", type=int, default=7,
+                       help="Total options for multi-answer mode (single mode always uses 6)")
+    parser.add_argument("--min-correct", type=int, default=2,
+                       help="Minimum number of correct options for multi-answer mode")
+    parser.add_argument("--max-correct", type=int, default=4,
+                       help="Maximum number of correct options for multi-answer mode")
+    parser.add_argument("--source-dirs", nargs="+", required=True,
+                       help="Captioning-mode source directories containing *_result.json files")
+    parser.add_argument("--eval-results-dir", type=str, default=EVAL_RESULTS_DIR,
+                       help="Optional directory containing previous funccap evaluation JSON files used as hard distractor sources")
     parser.add_argument("--api-key", type=str, required=True,
                        help="Gemini API key")
     parser.add_argument("--base-url", type=str,
