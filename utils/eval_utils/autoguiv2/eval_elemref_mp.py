@@ -1217,9 +1217,9 @@ if __name__ == "__main__":
     parser.add_argument("--task-type", type=str, default='func-w-bbox', choices=['func-w-bbox', 'func-w-ques', 'desc'], help="Task type: 'func' for functionality-based choices, 'desc' for description-based choices")
 
     # Input (prefer HF dataset)
-    parser.add_argument("--hf-dataset-id", type=str, default=['HongxinLi/AutoGUIv2-FuncElemCap', ''][-1], help="HF dataset ID")
+    parser.add_argument("--hf-dataset-id", type=str, default='HongxinLi/AutoGUIv2-FuncElemCap', help="HF dataset ID")
     parser.add_argument("--hf-split", type=str, default='test', help="HF split")
-    parser.add_argument("--hf-cache-dir", type=str, default=['/mnt/vdb1/hongxin_li/AutoGUIv2/hf_dataset_cache/FuncElemCap/' ,'/mnt/vdb1/hongxin_li/AutoGUIv2/hf_dataset_cache/AutoGUIv2-FuncElemCap-0125/'][-1], help="HF cache dir")
+    parser.add_argument("--hf-cache-dir", type=str, default='/mnt/vdb1/hongxin_li/AutoGUIv2/hf_dataset_cache/AutoGUIv2-FuncElemCap-0125/', help="HF cache dir")
     parser.add_argument("--questions-file", type=str, default=None, help="(Optional) JSON source - not implemented")
 
     # Model

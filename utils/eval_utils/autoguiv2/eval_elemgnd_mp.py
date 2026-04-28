@@ -8,18 +8,14 @@ where models need to locate GUI elements based on natural language questions.
 import os
 import json
 import uuid
-import re
 import time
 import argparse
 import multiprocessing
 import glob
 import hashlib
-import tempfile
-from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Any, Optional, Literal, TypeAlias
+from typing import Dict, List, Any, Optional
 from multiprocessing import Pool, Manager
-from functools import partial
 from PIL import Image
 from tqdm import tqdm
 from utils.data_utils.misc import pred_2_point, get_image_dimensions, resize_pil_image
@@ -1639,7 +1635,7 @@ Examples:
     # HuggingFace specific arguments
     parser.add_argument("--hf-split", type=str, default='test',
                        help="Dataset split to load from HuggingFace (default: 'test')")
-    parser.add_argument("--hf-cache-dir", type=str, default=['/volume/pt-coder/users/gji/data/gui_data/AutoGUIv2/hf_dataset_cache/FuncElemGnd/', '/volume/pt-coder/users/gji/projects/highres_autogui/utils/data_utils/autoguiv2/corrected_datasets'][-1],
+    parser.add_argument("--hf-cache-dir", type=str, default='/volume/pt-coder/users/gji/data/gui_data/AutoGUIv2/hf_dataset_cache/FuncElemGnd/',
                        help="Cache directory for HuggingFace datasets")
 
     # Model arguments
@@ -1663,9 +1659,9 @@ Examples:
             'oracle'
         ][2],
                        help="Model name (e.g., 'gpt-4o', 'gemini-2.5-pro-thinking', 'Qwen/Qwen3-VL-8B-Instruct')")
-    parser.add_argument("--base-url", type=str, default=None, # os.environ.get('OPENAI_BASE_URL_XIAOAI')
+    parser.add_argument("--base-url", type=str, default=None,
                        help="API base URL (uses OPENAI_API_BASE env var if not provided)")
-    parser.add_argument("--api-key", type=str, default=None, # os.environ.get('OPENAI_API_KEY_XIAOAI')
+    parser.add_argument("--api-key", type=str, default=None,
                        help="API key (uses OPENAI_API_KEY env var if not provided)")
 
     # Processing arguments
