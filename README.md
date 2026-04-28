@@ -4,7 +4,7 @@
 
 ### *Functional GUI Understanding through Hierarchical Region Decomposition*
 
-[![Paper](https://img.shields.io/badge/Paper-AutoGUIv2-blue?logo=adobeacrobatreader)](assets/AutoGUIv2.pdf)
+[![Paper](https://img.shields.io/badge/Paper-AutoGUIv2-blue?logo=adobeacrobatreader)](https://arxiv.org/abs/2604.24441https://arxiv.org/abs/2604.24441)
 [![Project Page](https://img.shields.io/badge/Project-Page-green?logo=github)](https://ZJULiHongxin.github.io/AutoGUI-v2)
 [![FuncElemGnd](https://img.shields.io/badge/🤗_FuncElemGnd-Dataset-yellow)](https://huggingface.co/datasets/AutoGUI/AutoGUIv2-FuncElemGnd)
 [![FuncRegionGnd](https://img.shields.io/badge/🤗_FuncRegionGnd-Dataset-yellow)](https://huggingface.co/datasets/AutoGUI/AutoGUIv2-FuncRegionGnd)
@@ -19,6 +19,13 @@
 <img src="assets/fig_teaser.png" width="95%" alt="AutoGUI-v2 Example">
 
 </div>
+
+## 📢 News
+
+- **[2026-04-28]** 🎉 AutoGUI-v2 technical report has been released!
+- **[2026-04-28]** 🎉 AutoGUI-v2 region-level grounding and captioning benchmarks have been publicized on HuggingFace.
+- **[2026-04-28]** 🎉 AutoGUI-v2 element-level grounding benchmark has been publicized on HuggingFace.
+- **[TODO]** AutoGUI-v2 element-level captioning benchmark.
 
 ---
 
@@ -338,26 +345,52 @@ AutoGUI-v2/
 If you use AutoGUI-v2 in your research, please cite:
 
 ```bibtex
-@article{autoguiv2,
-  title     = {AutoGUI-v2: Functional GUI Understanding through Hierarchical Region Decomposition},
-  author    = {Li, Hongxin and others},
-  journal   = {arXiv preprint},
-  year      = {2025}
+@misc{li2026autoguiv2comprehensivemultimodalgui,
+      title={AutoGUI-v2: A Comprehensive Multi-Modal GUI Functionality Understanding Benchmark}, 
+      author={Hongxin Li and Xiping Wang and Jingran Su and Zheng Ju and Yuntao Chen and Qing Li and Zhaoxiang Zhang},
+      year={2026},
+      eprint={2604.24441},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2604.24441}, 
+}
+
+@inproceedings{li-etal-2025-autogui,
+    title = "{A}uto{GUI}: Scaling {GUI} Grounding with Automatic Functionality Annotations from {LLM}s",
+    author = "Li, Hongxin  and
+      Chen, Jingfan  and
+      Su, Jingran  and
+      Chen, Yuntao  and
+      Qing, Li  and
+      Zhang, Zhaoxiang",
+    editor = "Che, Wanxiang  and
+      Nabende, Joyce  and
+      Shutova, Ekaterina  and
+      Pilehvar, Mohammad Taher",
+    booktitle = "Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)",
+    month = jul,
+    year = "2025",
+    address = "Vienna, Austria",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2025.acl-long.510/",
+    doi = "10.18653/v1/2025.acl-long.510",
+    pages = "10323--10358",
+    ISBN = "979-8-89176-251-0"
 }
 ```
 
 ### Related Work
-
-- [ScreenSpot-Pro](https://huggingface.co/datasets/HongxinLi/ScreenSpot-Pro) — Professional GUI grounding benchmark
+- [AutoGUI](https://autogui-project.github.io/) — Fully-Automatic GUI grounding task generation pipeline and functionality understanding benchmark
+- [ScreenSpot-Pro](https://github.com/likaixin2000/ScreenSpot-Pro-GUI-Grounding) — Professional GUI grounding benchmark
 - [OmniParser](https://github.com/microsoft/OmniParser) — Unified screen parsing
 - [OSWorld](https://os-world.github.io/) — Desktop environment for GUI agents
 - [UI-TARS](https://github.com/bytedance/UI-TARS) — GUI agent model
-
+- [UIPro](https://openaccess.thecvf.com/content/ICCV2025/html/Li_UIPro_Unleashing_Superior_Interaction_Capability_For_GUI_Agents_ICCV_2025_paper.html) — Large-scale GUI agent training recipe
 ---
 
 ## Acknowledgments
 
-Thanks to OpenAI, Google, and Anthropic for API access; HuggingFace for dataset hosting; and the GUI understanding community for open benchmarks that made this work possible.
+Thanks to the Brave research team the GUI Agent community that made this work possible.
 
 ---
 
