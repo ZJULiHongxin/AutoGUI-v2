@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autoguiv2"
+version = "1.0.0"
+description = "AutoGUI-v2 introduces functional GUI understanding: rather than simply detecting what elements look like, it asks what they do — and whether models can tell apart elements that look the same but behave differently."
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+]
+dependencies = [
+]
+
+[project.urls]
+"Homepage" = "https://github.com/ZJULiHongxin/AutoGUI-v2#-overview"
+
+[tool.setuptools.packages.find]
+exclude = ["assets*", "utils*"]
+
+[tool.wheel]
+exclude = ["assets*", "utils*"]

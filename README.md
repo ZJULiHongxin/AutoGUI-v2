@@ -4,7 +4,7 @@
 
 ### *Functional GUI Understanding through Hierarchical Region Decomposition*
 
-[![Paper](https://img.shields.io/badge/Paper-AutoGUIv2-blue?logo=adobeacrobatreader)](https://arxiv.org/abs/2604.24441https://arxiv.org/abs/2604.24441)
+[![Paper](https://img.shields.io/badge/Paper-AutoGUIv2-blue?logo=adobeacrobatreader)](https://arxiv.org/abs/2604.24441)
 [![Project Page](https://img.shields.io/badge/Project-Page-green?logo=github)](https://ZJULiHongxin.github.io/AutoGUI-v2)
 [![FuncElemGnd](https://img.shields.io/badge/🤗_FuncElemGnd-Dataset-yellow)](https://huggingface.co/datasets/AutoGUI/AutoGUIv2-FuncElemGnd)
 [![FuncRegionGnd](https://img.shields.io/badge/🤗_FuncRegionGnd-Dataset-yellow)](https://huggingface.co/datasets/AutoGUI/AutoGUIv2-FuncRegionGnd)
@@ -79,17 +79,10 @@ Built from the hierarchical decomposition tree. Groups of functionally similar b
 git clone https://github.com/ZJULiHongxin/AutoGUI-v2.git
 cd AutoGUI-v2
 
-pip install torch torchvision opencv-python pillow colorama tqdm
-pip install datasets huggingface_hub openai anthropic megfile
-pip install fastapi uvicorn rich        # monitoring web UI
-pip install vllm                        # local embedding model (FuncRegionGnd)
+pip install -r requirements.txt
 ```
 
-```bash
-export OPENAI_API_KEY="your-openai-key"
-export GEMINI_API_KEY="your-gemini-key"
-export ANTHROPIC_API_KEY="your-anthropic-key"
-```
+This installs libraries used for data annotations and evaluation.
 
 ---
 

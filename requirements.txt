@@ -7,11 +7,11 @@ immutabledict==4.3.1
 matplotlib==3.10.9
 megfile==5.0.10
 modelscope==1.36.2
-numpy==2.4.4
+numpy==1.26.4
 openai==2.32.0
-opencv_python==4.13.0.92
+opencv_python
 paddleocr==3.5.0
-pandas==3.0.2
+pandas
 Pillow==12.2.0
 plotly==6.7.0
 pydantic==2.13.3
@@ -26,7 +26,5 @@ torch==2.11.0
 torchvision==0.26.0
 tqdm==4.67.3
 transformers==4.50.0
-uipro==0.0.1
 ultralytics==8.4.41
 uvicorn==0.46.0
-vllm==0.20.0

@@ -1,6 +1,3 @@
-# 最大的问题是：分割出来的功能区没有完全以及正好包含所有必要元素。
-# ScreenSpot 每张图3.3美元，20分钟
-
 import os, json, cv2
 import re
 import traceback
@@ -8,7 +5,6 @@ import base64
 import time
 import argparse
 import multiprocessing
-import megfile
 import numpy as np
 
 import random
@@ -66,12 +62,7 @@ def on_off(value: bool) -> str:
 
 def load_image(img_file: str) -> Image.Image:
     """Load image from file path, supporting both local and S3 paths"""
-    if 's3://' in img_file:
-        img_file = img_file.replace("test_samples/", '')
-        with megfile.smart_open(img_file, 'rb') as f:
-            image = Image.open(BytesIO(f.read())).convert("RGB")
-    else:
-        image = Image.open(img_file).convert("RGB")
+    image = Image.open(img_file).convert("RGB")
     return image
 
 def image_to_base64(image_or_path):
